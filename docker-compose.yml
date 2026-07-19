@@ -1,0 +1,46 @@
+services:
+  filescanner:
+    build:
+      context: ./clamav
+    image: av-scanner-v6-clamav:1.5.3
+    restart: unless-stopped
+    healthcheck:
+      test:
+        ["CMD-SHELL", "clamdscan --config-file=/etc/clamav/clamd.conf --ping=1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 180s
+
+  app:
+    build:
+      context: .
+    image: av-scanner-v6:local
+    restart: unless-stopped
+    depends_on:
+      filescanner:
+        condition: service_healthy
+    environment:
+      CLAMAV_HOST: filescanner
+      CLAMAV_PORT: 3310
+      KAFKA_URL: ${KAFKA_URL:-host.docker.internal:9092}
+      PORT: 3000
+    env_file:
+      - path: .env
+        required: false
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 180s

@@ -1,0 +1,194 @@
+{
+  "family": "av-scanner-v6",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "4096",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT:role/ECS_EXECUTION_ROLE",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT:role/AV_SCANNER_TASK_ROLE",
+  "containerDefinitions": [
+    {
+      "name": "app",
+      "image": "ACCOUNT.dkr.ecr.REGION.amazonaws.com/av-scanner-v6:TAG",
+      "essential": true,
+      "cpu": 512,
+      "memory": 1024,
+      "stopTimeout": 120,
+      "portMappings": [
+        {
+          "containerPort": 3000,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {
+          "name": "LOG_LEVEL",
+          "value": "info"
+        },
+        {
+          "name": "PORT",
+          "value": "3000"
+        },
+        {
+          "name": "CLAMAV_HOST",
+          "value": "127.0.0.1"
+        },
+        {
+          "name": "CLAMAV_PORT",
+          "value": "3310"
+        },
+        {
+          "name": "CLAMAV_HEALTH_TIMEOUT_MS",
+          "value": "2000"
+        },
+        {
+          "name": "CLAMAV_SCAN_TIMEOUT_MS",
+          "value": "300000"
+        },
+        {
+          "name": "KAFKA_URL",
+          "value": "kafka+ssl://broker-1.example.internal:9094,kafka+ssl://broker-2.example.internal:9094"
+        },
+        {
+          "name": "KAFKA_CLIENT_ID",
+          "value": "av-scanner-v6"
+        },
+        {
+          "name": "KAFKA_GROUP_ID",
+          "value": "file-scanner-processor"
+        },
+        {
+          "name": "KAFKA_ORIGINATOR",
+          "value": "file-scanner-processor"
+        },
+        {
+          "name": "AVSCAN_TOPIC",
+          "value": "avscan.action.scan"
+        },
+        {
+          "name": "KAFKA_REJECT_UNAUTHORIZED",
+          "value": "true"
+        },
+        {
+          "name": "AWS_REGION",
+          "value": "REGION"
+        },
+        {
+          "name": "SCAN_CONCURRENCY",
+          "value": "1"
+        },
+        {
+          "name": "WHITELISTED_CLEAN_BUCKETS",
+          "value": "CLEAN_BUCKET_1,CLEAN_BUCKET_2"
+        },
+        {
+          "name": "WHITELISTED_QUARANTINE_BUCKETS",
+          "value": "QUARANTINE_BUCKET_1,QUARANTINE_BUCKET_2"
+        },
+        {
+          "name": "WHITELISTED_KAFKA_TOPICS",
+          "value": "submission.scan.complete"
+        },
+        {
+          "name": "BUSAPI_EVENTS_URL",
+          "value": "https://api.example.com/v5/bus/events"
+        },
+        {
+          "name": "AUTH0_URL",
+          "value": "https://AUTH0_DOMAIN/oauth/token"
+        },
+        {
+          "name": "AUTH0_AUDIENCE",
+          "value": "https://api.example.com/"
+        },
+        {
+          "name": "OPSGENIE_ENABLED",
+          "value": "true"
+        },
+        {
+          "name": "OPSGENIE_API_URL",
+          "value": "https://api.opsgenie.com/v2/alerts"
+        },
+        {
+          "name": "OPSGENIE_SOURCE",
+          "value": "Production"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "AUTH0_CLIENT_ID",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT:secret:av-scanner-v6/auth0-client-id"
+        },
+        {
+          "name": "AUTH0_CLIENT_SECRET",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT:secret:av-scanner-v6/auth0-client-secret"
+        },
+        {
+          "name": "KAFKA_CLIENT_CERT",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT:secret:av-scanner-v6/kafka-client-cert"
+        },
+        {
+          "name": "KAFKA_CLIENT_CERT_KEY",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT:secret:av-scanner-v6/kafka-client-key"
+        },
+        {
+          "name": "KAFKA_CA_CERT",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT:secret:av-scanner-v6/kafka-ca-cert"
+        },
+        {
+          "name": "OPSGENIE_API_KEY",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT:secret:av-scanner-v6/opsgenie-api-key"
+        }
+      ],
+      "dependsOn": [
+        {
+          "containerName": "filescanner",
+          "condition": "HEALTHY"
+        }
+      ],
+      "healthCheck": {
+        "command": [
+          "CMD-SHELL",
+          "node -e \"fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))\""
+        ],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 180
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/av-scanner-v6",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "app"
+        }
+      }
+    },
+    {
+      "name": "filescanner",
+      "image": "ACCOUNT.dkr.ecr.REGION.amazonaws.com/av-scanner-v6-clamav:TAG",
+      "essential": true,
+      "cpu": 512,
+      "memory": 2048,
+      "healthCheck": {
+        "command": [
+          "CMD-SHELL",
+          "clamdscan --config-file=/etc/clamav/clamd.conf --ping=1"
+        ],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 180
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/av-scanner-v6",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "clamav"
+        }
+      }
+    }
+  ]
+}

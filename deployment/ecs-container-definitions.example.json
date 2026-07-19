@@ -1,0 +1,55 @@
+[
+  {
+    "name": "app",
+    "image": "ACCOUNT.dkr.ecr.REGION.amazonaws.com/av-scanner-v6:TAG",
+    "essential": true,
+    "stopTimeout": 120,
+    "portMappings": [
+      {
+        "containerPort": 3000,
+        "protocol": "tcp"
+      }
+    ],
+    "environment": [
+      {
+        "name": "CLAMAV_HOST",
+        "value": "127.0.0.1"
+      },
+      {
+        "name": "CLAMAV_PORT",
+        "value": "3310"
+      }
+    ],
+    "dependsOn": [
+      {
+        "containerName": "filescanner",
+        "condition": "HEALTHY"
+      }
+    ],
+    "healthCheck": {
+      "command": [
+        "CMD-SHELL",
+        "node -e \"fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))\""
+      ],
+      "interval": 30,
+      "timeout": 5,
+      "retries": 3,
+      "startPeriod": 180
+    }
+  },
+  {
+    "name": "filescanner",
+    "image": "ACCOUNT.dkr.ecr.REGION.amazonaws.com/av-scanner-v6-clamav:TAG",
+    "essential": true,
+    "healthCheck": {
+      "command": [
+        "CMD-SHELL",
+        "clamdscan --config-file=/etc/clamav/clamd.conf --ping=1"
+      ],
+      "interval": 30,
+      "timeout": 5,
+      "retries": 3,
+      "startPeriod": 180
+    }
+  }
+]
