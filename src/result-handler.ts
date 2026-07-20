@@ -1,5 +1,4 @@
 import type { AxiosInstance, AxiosRequestConfig } from "axios";
-import type { Logger } from "winston";
 
 import { M2MTokenProvider } from "./auth.js";
 import type { AppConfig } from "./config.js";
@@ -47,34 +46,31 @@ export function callbackPayload(payload: ScanPayload): ScanResultPayload {
   return output as ScanResultPayload;
 }
 
-/** Handles post-scan file copying, alerting, and callback delivery. */
+/** Handles post-scan file copying and callback delivery. */
 export class ScanResultHandler implements ResultHandler {
   /**
    * Creates the result handler used by ScanProcessor.
    *
-   * @param config - Bus API, Opsgenie, and service identity settings.
+   * @param config - Bus API and service identity settings.
    * @param objectStore - S3 copy/delete implementation.
    * @param tokenProvider - Auth0 token source used for Bus API events.
-   * @param http - Axios client used for webhooks, Bus API, and Opsgenie.
-   * @param logger - Structured process logger.
+   * @param http - Axios client used for webhooks and the Bus API.
    */
   constructor(
     private readonly config: AppConfig,
     private readonly objectStore: ObjectStore,
     private readonly tokenProvider: M2MTokenProvider,
     private readonly http: AxiosInstance,
-    private readonly logger: Logger,
   ) {}
 
   /**
-   * Copies any moved result, schedules best-effort alerting, and delivers its
-   * callback. Source deletion is returned separately for the post-commit step.
+   * Copies any moved result and delivers its callback. Source deletion is
+   * returned separately for the post-commit step.
    *
    * @param payload - Terminal scan payload.
    * @param source - Original S3 object location.
    * @returns Callback-safe payload and any work safe only after Kafka commit.
    * @throws When destination copying or required callback delivery fails.
-   * Opsgenie remains best-effort and never prevents offset commit.
    */
   async handle(
     payload: ScanPayload,
@@ -101,18 +97,12 @@ export class ScanResultHandler implements ResultHandler {
       await this.postWebhook(result, externalPayload);
     }
 
-    const alertAfterCommit = result.isInfected && this.config.opsgenie.enabled;
     return {
       payload: externalPayload,
-      ...(result.moveFile || alertAfterCommit
+      ...(result.moveFile
         ? {
             afterCommit: async () => {
-              if (alertAfterCommit) {
-                void this.alertBestEffort(result);
-              }
-              if (result.moveFile) {
-                await this.objectStore.delete(source);
-              }
+              await this.objectStore.delete(source);
             },
           }
         : {}),
@@ -190,41 +180,5 @@ export class ScanResultHandler implements ResultHandler {
       url: hook.url,
     };
     await this.http.request(request);
-  }
-
-  /**
-   * Sends a malicious-file alert without making alert delivery transactional.
-   *
-   * @param result - Infected or fail-closed scan result.
-   * @returns A promise that always resolves after success or logged failure.
-   */
-  private async alertBestEffort(result: ScanPayload): Promise<void> {
-    try {
-      if (!this.config.opsgenie.apiKey) {
-        throw new Error("OPSGENIE_API_KEY is required when alerts are enabled");
-      }
-
-      const moveDetail = result.moveFile
-        ? ` The file has been moved to the ${result.quarantineDestinationBucket} bucket.`
-        : "";
-      await this.http.post(
-        this.config.opsgenie.apiUrl,
-        {
-          message: `Malicious file detected: File at ${result.url} is malicious.${moveDetail}`,
-          priority: result.moveFile ? "P2" : "P1",
-          source: this.config.opsgenie.source,
-        },
-        {
-          headers: {
-            Authorization: `GenieKey ${this.config.opsgenie.apiKey}`,
-            "Content-Type": "application/json",
-          },
-        },
-      );
-    } catch (error) {
-      this.logger.error("Failed to post Opsgenie alert", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
   }
 }

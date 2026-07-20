@@ -107,7 +107,6 @@ export async function runApplication(): Promise<void> {
     objectStore,
     tokenProvider,
     http,
-    logger,
   );
   const processor = new ScanProcessor(
     config,

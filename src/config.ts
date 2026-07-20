@@ -53,12 +53,6 @@ export interface AppConfig {
     topic: string;
   };
   logLevel: string;
-  opsgenie: {
-    apiKey?: string;
-    apiUrl: string;
-    enabled: boolean;
-    source: string;
-  };
   scan: {
     concurrency: number;
     maxFileSizeBytes: number;
@@ -318,11 +312,6 @@ export function loadConfig(
 
   const authUrl = environment.AUTH0_URL;
   const tls = kafkaTls(environment, schemeRequestsTls);
-  const opsgenieEnabled = booleanValue(
-    environment.OPSGENIE_ENABLED ?? environment.OPGENIE_ENABLED,
-    false,
-    "OPSGENIE_ENABLED",
-  );
 
   return {
     auth: {
@@ -401,15 +390,6 @@ export function loadConfig(
       ...(tls ? { tls } : {}),
     },
     logLevel: environment.LOG_LEVEL ?? "info",
-    opsgenie: {
-      apiUrl:
-        environment.OPSGENIE_API_URL ?? "https://api.opsgenie.com/v2/alerts",
-      enabled: opsgenieEnabled,
-      source: environment.OPSGENIE_SOURCE ?? "DevOps",
-      ...(environment.OPSGENIE_API_KEY
-        ? { apiKey: environment.OPSGENIE_API_KEY }
-        : {}),
-    },
     scan: {
       concurrency: positiveInteger(
         environment.SCAN_CONCURRENCY,

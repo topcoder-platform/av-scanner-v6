@@ -91,7 +91,7 @@ Supported callback modes are:
   `callbackKafkaTopic`.
 - `webhook`: send the result payload directly with `get` or `post` and
   `no-auth`, `bearer`, `basic`, or `api-key` authentication.
-- `no-callback`: complete scanning, movement, and alerting without notification.
+- `no-callback`: complete scanning and optional movement without notification.
 
 When `moveFile` is true, both destination buckets are required. The source is
 copied to the selected bucket under `fileName`, the callback succeeds, and the
@@ -148,8 +148,7 @@ partition from committing past it. Callback or commit failure leaves the source
 object in place; repeating the destination copy is safe because it targets the
 same bucket and key. After a successful commit, source deletion is best-effort:
 a deletion failure is logged and can leave the original copy behind, but the
-completed event is not replayed. Opsgenie delivery is scheduled after commit,
-is best-effort, and does not block the commit.
+completed event is not replayed.
 
 Kafka processing and external callbacks are intentionally at-least-once. A
 process crash or forced task stop after a remote callback succeeds but before
@@ -181,7 +180,7 @@ artifacts are provided as a registration-ready Fargate skeleton in
 in `deployment/ecs-container-definitions.example.json`. Replace their account,
 region, role, image, logging, environment, and secret placeholders before use.
 Remove optional secret entries that the deployment does not use, such as mTLS
-material or an Opsgenie API key when those features are disabled.
+material when that feature is disabled.
 
 The examples set the app container's `stopTimeout` to the Fargate maximum of
 120 seconds. This allows the SIGTERM handler's bounded in-flight Kafka drain
@@ -260,13 +259,8 @@ intentionally excluded from `/health`.
 | `AUTH0_CLIENT_ID` / `AUTH0_CLIENT_SECRET`     | unset                    | Client credentials for kafka callbacks                     |
 | `AUTH0_PROXY_SERVER_URL`                      | unset                    | Optional Topcoder token proxy endpoint                     |
 | `TOKEN_CACHE_TIME`                            | `300`                    | Maximum token cache lifetime in seconds                    |
-| `WEBHOOK_TIMEOUT_MS`                          | `15000`                  | HTTP callback/Auth0/Opsgenie timeout                       |
-| `OPSGENIE_ENABLED`                            | `false`                  | Enable infected-file alerts                                |
-| `OPSGENIE_API_URL`                            | Opsgenie v2 alerts URL   | Alert endpoint                                             |
-| `OPSGENIE_API_KEY`                            | unset                    | Required when alerts are enabled                           |
-| `OPSGENIE_SOURCE`                             | `DevOps`                 | Alert source                                               |
+| `WEBHOOK_TIMEOUT_MS`                          | `15000`                  | HTTP callback/Auth0 timeout                                |
 
-The legacy misspelling `OPGENIE_ENABLED` remains accepted as a fallback.
 `kafka+ssl://` enables TLS and defaults to peer verification with Node's system
 trust store. Bare brokers alongside it inherit the same TLS transport because
 the Kafka client has one transport setting; explicit `kafka://` and

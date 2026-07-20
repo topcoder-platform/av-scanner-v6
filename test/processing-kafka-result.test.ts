@@ -398,7 +398,7 @@ void test("ScanResultHandler stages a clean copy and posts the complete Bus enve
   const http = axios.create({ adapter: recordingAdapter(requests) });
   const { store, copies, deletes } = objectStoreFixture(4);
   const tokens = new M2MTokenProvider(config.auth, http);
-  const handler = new ScanResultHandler(config, store, tokens, http, logger);
+  const handler = new ScanResultHandler(config, store, tokens, http);
   const payload: ScanPayload = {
     callbackKafkaTopic: "submission.scan.complete",
     callbackOption: CallbackOptions.Kafka,
@@ -464,7 +464,6 @@ void test("ScanResultHandler retains the source when callback delivery fails", a
     store,
     new M2MTokenProvider(config.auth, http),
     http,
-    logger,
   );
 
   await assert.rejects(
@@ -495,7 +494,7 @@ void test("ScanResultHandler preserves webhook API-key authentication and payloa
   const http = axios.create({ adapter: recordingAdapter(requests) });
   const { store } = objectStoreFixture(4);
   const tokens = new M2MTokenProvider(config.auth, http);
-  const handler = new ScanResultHandler(config, store, tokens, http, logger);
+  const handler = new ScanResultHandler(config, store, tokens, http);
 
   const processed = await handler.handle(
     {
@@ -521,41 +520,6 @@ void test("ScanResultHandler preserves webhook API-key authentication and payloa
   assert.equal(requests[0]?.headers["X-API-Key"], "webhook-secret");
   assert.deepEqual(requests[0]?.data, result);
   assert.equal("callbackHook" in result, false);
-});
-
-void test("ScanResultHandler treats Opsgenie failure as best-effort", async () => {
-  const config = testConfig({
-    OPSGENIE_API_KEY: "ops-key",
-    OPSGENIE_API_URL: "https://ops.example/alerts",
-    OPSGENIE_ENABLED: "true",
-  });
-  const requests: RecordedRequest[] = [];
-  const http = axios.create({
-    adapter: recordingAdapter(
-      requests,
-      new Set(["https://ops.example/alerts"]),
-    ),
-  });
-  const { store } = objectStoreFixture(4);
-  const tokens = new M2MTokenProvider(config.auth, http);
-  const handler = new ScanResultHandler(config, store, tokens, http, logger);
-
-  const processed = await handler.handle(
-    {
-      callbackOption: CallbackOptions.NoCallback,
-      fileName: "submission.zip",
-      isInfected: true,
-      moveFile: false,
-      status: "scanned",
-      url: "s3://source-bucket/submission.zip",
-    },
-    { bucket: "source-bucket", key: "submission.zip", region: "us-east-1" },
-  );
-  assert.equal(requests.length, 0);
-  await processed.afterCommit?.();
-
-  assert.equal(processed.payload.isInfected, true);
-  assert.equal(requests[0]?.url, "https://ops.example/alerts");
 });
 
 /**
