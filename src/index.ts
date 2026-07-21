@@ -122,7 +122,9 @@ export async function runApplication(): Promise<void> {
     config.scan.concurrency,
     logger,
   );
-  const health = new HealthServer(config.http, scanner, logger);
+  const health = new HealthServer(config.http, scanner, logger, () =>
+    consumer.isReady(),
+  );
   let resolveShutdownRequested: () => void = () => undefined;
   const shutdownRequested = new Promise<void>((resolve) => {
     resolveShutdownRequested = resolve;

@@ -1,0 +1,493 @@
+version: 2.1
+
+defaults: &defaults
+  docker:
+    - image: cimg/python:3.13.2-browsers
+
+install_dependencies: &install_dependencies
+  name: Install build and deployment dependencies
+  command: |
+    sudo apt-get update
+    sudo apt-get install -y jq python3-pip
+    sudo pip3 install awscli --upgrade
+
+install_deploy_suite: &install_deploy_suite
+  name: Install the Topcoder deployment suite
+  command: |
+    git clone --branch v1.4.20 https://github.com/topcoder-platform/tc-deploy-scripts ../buildscript
+    test "$(git -C ../buildscript rev-parse HEAD)" = "5f3745c35463ce0e2475c12269aa7a2b446456e5"
+    cp ../buildscript/awsconfiguration.sh .
+    python3 - \<<'PY'
+    from pathlib import Path
+
+    helper = Path("awsconfiguration.sh")
+    source = helper.read_text()
+    lines = source.splitlines()
+    auth_lines = [
+        index for index, line in enumerate(lines) if line.startswith("auth0cmd=$(echo ")
+    ]
+    token_lines = [
+        index
+        for index, line in enumerate(lines)
+        if line == "token=$( eval $auth0cmd | jq -r .access_token )"
+    ]
+    if len(auth_lines) != 1 or token_lines != [auth_lines[0] + 1]:
+        raise SystemExit("Pinned authentication helper no longer matches the reviewed form")
+    replacement = r'''auth0_payload="$(jq -cn \
+      --arg client_id "$CI_AUTH0_CLIENTID" \
+      --arg client_secret "$CI_AUTH0_CLIENTSECRET" \
+      --arg audience "$CI_AUTH0_AUDIENCE" \
+      --arg environment "$AWSENV" \
+      --arg username "$CIRCLE_PROJECT_USERNAME" \
+      --arg reponame "$CIRCLE_PROJECT_REPONAME" \
+      --arg build_num "$CIRCLE_BUILD_NUM" \
+      --arg branch "$CIRCLE_BRANCH" \
+      '{client_id:$client_id,client_secret:$client_secret,audience:$audience,grant_type:"client_credentials",environment:$environment,username:$username,reponame:$reponame,build_num:$build_num,branch:$branch}')"
+    token="$(
+      curl --fail --silent --show-error \
+        -X POST "$CI_AUTH0_URL" \
+        -H 'Content-Type: application/json' \
+        --data "$auth0_payload" |
+        jq -er '.access_token | select(type == "string" and length > 0)'
+    )"'''.splitlines()
+    lines[auth_lines[0] : token_lines[0] + 1] = replacement
+    helper.write_text("\n".join(lines) + "\n")
+    PY
+    sed -i '2i set -eo pipefail' awsconfiguration.sh
+    grep -Fq 'curl --fail --silent --show-error' awsconfiguration.sh
+    grep -Fq -- '--data "$auth0_payload"' awsconfiguration.sh
+    ! grep -Eq '(^|[[:space:]])eval([[:space:]]|$)' awsconfiguration.sh
+    ! grep -Fq 'curl -k' awsconfiguration.sh
+    ! grep -Fq -- '--insecure' awsconfiguration.sh
+    bash -n awsconfiguration.sh
+
+build_and_deploy_steps: &build_and_deploy_steps
+  - checkout
+  - setup_remote_docker
+  - run: *install_dependencies
+  - run: *install_deploy_suite
+  - run:
+      name: Build the application and ClamAV images
+      command: |
+        image_tag="v6-${CIRCLE_BUILD_NUM}-${CIRCLE_SHA1:0:12}"
+        docker buildx build --load --no-cache=true \
+          --platform linux/amd64 \
+          -t "${APPNAME}:${image_tag}" .
+        docker buildx build --load --no-cache=true \
+          --platform linux/amd64 \
+          --build-arg CLAMAV_TCP_ADDR=127.0.0.1 \
+          -t "${APPNAME}-clamav:${image_tag}" ./clamav
+
+        clamav_check_container="av-scanner-clamav-startup-check"
+        cleanup_clamav_check() {
+          docker rm -f "$clamav_check_container" >/dev/null 2>&1 || true
+        }
+        trap cleanup_clamav_check EXIT
+        docker run -d \
+          --name "$clamav_check_container" \
+          -e CLAMD_STARTUP_TIMEOUT=60 \
+          "${APPNAME}-clamav:${image_tag}" >/dev/null
+        clamav_ready=false
+        for _attempt in $(seq 1 180); do
+          if docker exec "$clamav_check_container" \
+            clamdscan --config-file=/etc/clamav/clamd.conf --ping=1 >/dev/null 2>&1; then
+            clamav_ready=true
+            break
+          fi
+          if [[ "$(docker inspect -f '{{.State.Running}}' "$clamav_check_container")" != true ]]; then
+            break
+          fi
+          sleep 1
+        done
+        if [[ "$clamav_ready" != true ]]; then
+          docker logs --tail 100 "$clamav_check_container" >&2
+          exit 1
+        fi
+        docker exec "$clamav_check_container" \
+          test -S /run/clamav/clamd.sock
+        sleep 2
+        if [[ "$(docker inspect -f '{{.State.Running}}' "$clamav_check_container")" != true ]]; then
+          docker logs --tail 100 "$clamav_check_container" >&2
+          exit 1
+        fi
+        docker exec "$clamav_check_container" \
+          clamdscan --config-file=/etc/clamav/clamd.conf --ping=1 >/dev/null
+        cleanup_clamav_check
+        trap - EXIT
+  - run:
+      name: Deploy the two-container Fargate task with CloudFormation
+      no_output_timeout: 30m
+      command: |
+        required_auth_variables=(
+          CI_AUTH0_URL
+          CI_AUTH0_CLIENTID
+          CI_AUTH0_CLIENTSECRET
+          CI_AUTH0_AUDIENCE
+          CIRCLE_PROJECT_USERNAME
+          CIRCLE_PROJECT_REPONAME
+          CIRCLE_BUILD_NUM
+          CIRCLE_BRANCH
+        )
+        for required_auth_variable in "${required_auth_variables[@]}"; do
+          if [[ -z "${!required_auth_variable:-}" ]]; then
+            echo "Missing required authentication input ${required_auth_variable}." >&2
+            exit 1
+          fi
+        done
+        if [[ "${CI_AUTH0_URL:-}" != https://* ]]; then
+          echo "CI_AUTH0_URL must use HTTPS." >&2
+          exit 1
+        fi
+        : "${DEPLOY_REGION:?Missing explicit deployment region}"
+        # The helper writes the default profile. Ignore any ambient profile
+        # selector supplied by the CircleCI context so it cannot redirect the
+        # deployment to a different profile or make that profile mandatory.
+        unset AWS_PROFILE AWS_DEFAULT_PROFILE
+        ./awsconfiguration.sh "$DEPLOY_ENV" "$DEPLOY_REGION"
+        source awsenvconf
+        # AWS CLI v1 reads AWS_DEFAULT_REGION. Export both names explicitly so
+        # an ambient CircleCI value cannot override the reviewed target.
+        export AWS_DEFAULT_REGION="$DEPLOY_REGION"
+        if [[ "$AWS_REGION" != "$DEPLOY_REGION" || \
+              "$AWS_DEFAULT_REGION" != "$DEPLOY_REGION" ]]; then
+          echo "Authentication helper selected an unexpected AWS region." >&2
+          exit 1
+        fi
+
+        case "$DEPLOY_ENV" in
+          DEV)
+            expected_account_id=811668436784
+            ;;
+          PROD)
+            expected_account_id="${PROD_AWS_ACCOUNT_ID:?Missing reviewed production AWS account ID}"
+            ;;
+          *)
+            echo "Unsupported deployment environment." >&2
+            exit 1
+            ;;
+        esac
+        if [[ ! "$expected_account_id" =~ ^[0-9]{12}$ || \
+              "${AWS_ENVIRONMENT^^}" != "$DEPLOY_ENV" ]]; then
+          echo "Authentication helper returned an unexpected deployment environment." >&2
+          exit 1
+        fi
+        account_id="$(aws sts get-caller-identity --query Account --output text)"
+        if [[ "$AWS_ACCOUNT_ID" != "$account_id" || \
+              "$account_id" != "$expected_account_id" ]]; then
+          echo "Authentication helper returned an unexpected AWS account." >&2
+          exit 1
+        fi
+
+        deploy_parameter_path="/config/${APPNAME}/deployvar"
+        deploy_parameters="$(aws ssm get-parameters-by-path \
+          --path "$deploy_parameter_path" \
+          --with-decryption \
+          --recursive \
+          --output json)"
+
+        read_deploy_parameter() {
+          local name="$1"
+          local value
+          value="$(jq -er \
+            --arg full_name "${deploy_parameter_path}/${name}" \
+            '.Parameters[] | select(.Name == $full_name) | .Value' \
+            \<<<"$deploy_parameters")"
+          if [[ "$value" == *[!A-Za-z0-9._/:+=,@-]* ]]; then
+            echo "Deployment parameter ${name} contains unsupported characters." >&2
+            exit 1
+          fi
+          printf '%s' "$value"
+        }
+
+        AWS_CLOUDFORMATION_STACK_NAME="$(read_deploy_parameter AWS_CLOUDFORMATION_STACK_NAME)"
+        AWS_ECS_CLUSTER="$(read_deploy_parameter AWS_ECS_CLUSTER)"
+        AWS_ECS_SERVICE="$(read_deploy_parameter AWS_ECS_SERVICE)"
+        AWS_ECS_TASK_FAMILY="$(read_deploy_parameter AWS_ECS_TASK_FAMILY)"
+        AWS_ECS_APP_CONTAINER_NAME="$(read_deploy_parameter AWS_ECS_APP_CONTAINER_NAME)"
+        AWS_ECS_CLAMAV_CONTAINER_NAME="$(read_deploy_parameter AWS_ECS_CLAMAV_CONTAINER_NAME)"
+        AWS_REPOSITORY="$(read_deploy_parameter AWS_REPOSITORY)"
+        AWS_REPOSITORY_CLAMAV="$(read_deploy_parameter AWS_REPOSITORY_CLAMAV)"
+
+        : "${AWS_CLOUDFORMATION_STACK_NAME:?Missing CloudFormation stack deploy variable}"
+        : "${AWS_ECS_CLUSTER:?Missing ECS cluster deploy variable}"
+        : "${AWS_ECS_SERVICE:?Missing ECS service deploy variable}"
+        : "${AWS_ECS_TASK_FAMILY:?Missing ECS task-family deploy variable}"
+        : "${AWS_ECS_APP_CONTAINER_NAME:?Missing app container deploy variable}"
+        : "${AWS_ECS_CLAMAV_CONTAINER_NAME:?Missing ClamAV container deploy variable}"
+        : "${AWS_REPOSITORY:?Missing app repository deploy variable}"
+        : "${AWS_REPOSITORY_CLAMAV:?Missing ClamAV repository deploy variable}"
+
+        expected_stack_name="av-scanner-v6-${DEPLOYMENT_ENVIRONMENT}"
+        case "$DEPLOY_ENV" in
+          DEV)
+            expected_ecs_cluster=av-scanner-service-serverless
+            expected_legacy_ecs_service=file-scanning-processor-svc
+            ;;
+          PROD)
+            expected_ecs_cluster="${PROD_AWS_ECS_CLUSTER:?Missing reviewed production ECS cluster name}"
+            expected_legacy_ecs_service="${PROD_LEGACY_ECS_SERVICE:?Missing reviewed production legacy ECS service name}"
+            ;;
+        esac
+        if [[ "$AWS_CLOUDFORMATION_STACK_NAME" != "$expected_stack_name" || \
+              "$AWS_ECS_CLUSTER" != "$expected_ecs_cluster" || \
+              "$AWS_ECS_SERVICE" != av-scanner-v6 || \
+              "$AWS_ECS_TASK_FAMILY" != av-scanner-v6 ]]; then
+          echo "Deployment parameters do not identify the dedicated AV Scanner v6 service." >&2
+          exit 1
+        fi
+        stack_description="$(aws cloudformation describe-stacks \
+          --stack-name "$AWS_CLOUDFORMATION_STACK_NAME" \
+          --output json)"
+        if [[ "$(jq -r '.Stacks[0].EnableTerminationProtection' \<<<"$stack_description")" != true || \
+              "$(jq -r '.Stacks[0].StackStatus' \<<<"$stack_description")" != *_COMPLETE ]]; then
+          echo "Dedicated AV Scanner v6 stack is absent, unprotected, or not complete." >&2
+          exit 1
+        fi
+
+        assert_legacy_service_zero() {
+          local legacy_service_state
+          legacy_service_state="$(aws ecs describe-services \
+            --cluster "$AWS_ECS_CLUSTER" \
+            --services "$expected_legacy_ecs_service" \
+            --output json)"
+          if ! jq -e \
+            --arg service "$expected_legacy_ecs_service" '
+              (.failures | length) == 0 and
+              (.services | length) == 1 and
+              .services[0].serviceName == $service and
+              .services[0].desiredCount == 0 and
+              .services[0].runningCount == 0 and
+              .services[0].pendingCount == 0
+            ' \<<<"$legacy_service_state" >/dev/null; then
+            echo "Legacy scanner service is not safely held at zero." >&2
+            exit 1
+          fi
+        }
+        assert_legacy_service_zero
+
+        image_tag="v6-${CIRCLE_BUILD_NUM}-${CIRCLE_SHA1:0:12}"
+        registry="${account_id}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+        app_image="${registry}/${AWS_REPOSITORY}:${image_tag}"
+        clamav_image="${registry}/${AWS_REPOSITORY_CLAMAV}:${image_tag}"
+
+        active_task_definition="$(aws ecs describe-services \
+          --cluster "$AWS_ECS_CLUSTER" \
+          --services "$AWS_ECS_SERVICE" \
+          --query 'services[0].taskDefinition' \
+          --output text)"
+        if [[ "${active_task_definition##*/}" != "${AWS_ECS_TASK_FAMILY}:"* ]]; then
+          echo "ECS service is using an unexpected task-definition family." >&2
+          exit 1
+        fi
+        current_app_image="$(aws ecs describe-task-definition \
+          --task-definition "$active_task_definition" \
+          --query "taskDefinition.containerDefinitions[?name=='${AWS_ECS_APP_CONTAINER_NAME}'].image | [0]" \
+          --output text)"
+        current_clamav_image="$(aws ecs describe-task-definition \
+          --task-definition "$active_task_definition" \
+          --query "taskDefinition.containerDefinitions[?name=='${AWS_ECS_CLAMAV_CONTAINER_NAME}'].image | [0]" \
+          --output text)"
+
+        verify_pullable_ecr_image() {
+          local image="$1"
+          local reference="${image#*/}"
+          local repository image_id
+          if [[ "$reference" == *@sha256:* ]]; then
+            repository="${reference%@*}"
+            image_id="imageDigest=${reference#*@}"
+          else
+            repository="${reference%:*}"
+            image_id="imageTag=${reference##*:}"
+          fi
+          aws ecr describe-images \
+            --repository-name "$repository" \
+            --image-ids "$image_id" >/dev/null
+        }
+
+        verify_rollback_retention() {
+          local repository="$1"
+          local lifecycle_policy safe_any_rule_count any_rule_count tagged_rule_count
+          lifecycle_policy="$(aws ecr get-lifecycle-policy \
+            --repository-name "$repository" \
+            --query lifecyclePolicyText \
+            --output text)"
+          safe_any_rule_count="$(jq \
+            '[.rules[].selection | select(.tagStatus == "any" and .countType == "imageCountMoreThan" and .countNumber >= 30)] | length' \
+            \<<<"$lifecycle_policy")"
+          any_rule_count="$(jq \
+            '[.rules[].selection | select(.tagStatus == "any")] | length' \
+            \<<<"$lifecycle_policy")"
+          tagged_rule_count="$(jq \
+            '[.rules[].selection | select(.tagStatus == "tagged")] | length' \
+            \<<<"$lifecycle_policy")"
+          if [[ "$safe_any_rule_count" -ne 1 || "$any_rule_count" -ne 1 ]]; then
+            echo "ECR repository ${repository} lacks a catch-all 30-image rollback window." >&2
+            exit 1
+          fi
+          if [[ "$tagged_rule_count" -ne 0 ]]; then
+            echo "ECR repository ${repository} has an earlier rule that can expire tagged rollback images." >&2
+            exit 1
+          fi
+        }
+
+        verify_repository_controls() {
+          local repository="$1"
+          local mutability
+          mutability="$(aws ecr describe-repositories \
+            --repository-names "$repository" \
+            --query 'repositories[0].imageTagMutability' \
+            --output text)"
+          if [[ "$mutability" != "IMMUTABLE" ]]; then
+            echo "ECR repository ${repository} does not enforce immutable tags." >&2
+            exit 1
+          fi
+        }
+
+        # CloudFormation's deployment circuit breaker can only roll back when
+        # both images used by the currently active task still exist in ECR.
+        verify_repository_controls "$AWS_REPOSITORY"
+        verify_repository_controls "$AWS_REPOSITORY_CLAMAV"
+        verify_rollback_retention "$AWS_REPOSITORY"
+        verify_rollback_retention "$AWS_REPOSITORY_CLAMAV"
+        verify_pullable_ecr_image "$current_app_image"
+        verify_pullable_ecr_image "$current_clamav_image"
+
+        aws ecr get-login-password --region "$AWS_REGION" | \
+          docker login --username AWS --password-stdin "$registry"
+        docker tag "${APPNAME}:${image_tag}" "$app_image"
+        docker tag "${APPNAME}-clamav:${image_tag}" "$clamav_image"
+        docker push "$app_image"
+        docker push "$clamav_image"
+
+        # Recheck after the pushes in case an image-count lifecycle rule expired
+        # the active revision while the new immutable tags were being uploaded.
+        verify_pullable_ecr_image "$current_app_image"
+        verify_pullable_ecr_image "$current_clamav_image"
+        assert_legacy_service_zero
+
+        aws cloudformation deploy \
+          --stack-name "$AWS_CLOUDFORMATION_STACK_NAME" \
+          --template-file deployment/fargate-service.yml \
+          --parameter-overrides \
+            ImageTag="$image_tag" \
+            EnvironmentName="$DEPLOYMENT_ENVIRONMENT" \
+          --no-fail-on-empty-changeset
+
+        aws ecs wait services-stable \
+          --cluster "$AWS_ECS_CLUSTER" \
+          --services "$AWS_ECS_SERVICE"
+        assert_legacy_service_zero
+
+        active_task_definition="$(aws ecs describe-services \
+          --cluster "$AWS_ECS_CLUSTER" \
+          --services "$AWS_ECS_SERVICE" \
+          --query 'services[0].taskDefinition' \
+          --output text)"
+        active_app_image="$(aws ecs describe-task-definition \
+          --task-definition "$active_task_definition" \
+          --query "taskDefinition.containerDefinitions[?name=='${AWS_ECS_APP_CONTAINER_NAME}'].image | [0]" \
+          --output text)"
+        active_clamav_image="$(aws ecs describe-task-definition \
+          --task-definition "$active_task_definition" \
+          --query "taskDefinition.containerDefinitions[?name=='${AWS_ECS_CLAMAV_CONTAINER_NAME}'].image | [0]" \
+          --output text)"
+
+        if [[ "$active_app_image" != "$app_image" ]]; then
+          echo "ECS stabilized on an unexpected application image." >&2
+          exit 1
+        fi
+        if [[ "$active_clamav_image" != "$clamav_image" ]]; then
+          echo "ECS stabilized on an unexpected ClamAV image." >&2
+          exit 1
+        fi
+
+        expected_app_digest="$(aws ecr describe-images \
+          --repository-name "$AWS_REPOSITORY" \
+          --image-ids "imageTag=${image_tag}" \
+          --query 'imageDetails[0].imageDigest' \
+          --output text)"
+        expected_clamav_digest="$(aws ecr describe-images \
+          --repository-name "$AWS_REPOSITORY_CLAMAV" \
+          --image-ids "imageTag=${image_tag}" \
+          --query 'imageDetails[0].imageDigest' \
+          --output text)"
+        running_task_arns="$(aws ecs list-tasks \
+          --cluster "$AWS_ECS_CLUSTER" \
+          --service-name "$AWS_ECS_SERVICE" \
+          --desired-status RUNNING \
+          --query taskArns \
+          --output text)"
+        if [[ -z "$running_task_arns" || "$running_task_arns" == "None" ]]; then
+          echo "ECS stabilized without a running task to verify." >&2
+          exit 1
+        fi
+        read -r -a running_task_arn_array \<<<"$running_task_arns"
+        running_tasks="$(aws ecs describe-tasks \
+          --cluster "$AWS_ECS_CLUSTER" \
+          --tasks "${running_task_arn_array[@]}" \
+          --output json)"
+        running_task_count="$(jq '.tasks | length' \<<<"$running_tasks")"
+        desired_task_count="$(aws ecs describe-services \
+          --cluster "$AWS_ECS_CLUSTER" \
+          --services "$AWS_ECS_SERVICE" \
+          --query 'services[0].desiredCount' \
+          --output text)"
+        healthy_current_task_count="$(jq \
+          --arg task_definition "$active_task_definition" \
+          '[.tasks[] | select(.desiredStatus == "RUNNING" and .lastStatus == "RUNNING" and .healthStatus == "HEALTHY" and .taskDefinitionArn == $task_definition)] | length' \
+          \<<<"$running_tasks")"
+        app_digest_match_count="$(jq \
+          --arg name "$AWS_ECS_APP_CONTAINER_NAME" \
+          --arg digest "$expected_app_digest" \
+          '[.tasks[].containers[] | select(.name == $name and .lastStatus == "RUNNING" and .healthStatus == "HEALTHY" and .imageDigest == $digest)] | length' \
+          \<<<"$running_tasks")"
+        clamav_digest_match_count="$(jq \
+          --arg name "$AWS_ECS_CLAMAV_CONTAINER_NAME" \
+          --arg digest "$expected_clamav_digest" \
+          '[.tasks[].containers[] | select(.name == $name and .lastStatus == "RUNNING" and .healthStatus == "HEALTHY" and .imageDigest == $digest)] | length' \
+          \<<<"$running_tasks")"
+        if [[ "$(jq '.failures | length' \<<<"$running_tasks")" -ne 0 || \
+              "$running_task_count" -ne "$desired_task_count" || \
+              "$healthy_current_task_count" -ne "$running_task_count" || \
+              "$app_digest_match_count" -ne "$running_task_count" || \
+              "$clamav_digest_match_count" -ne "$running_task_count" ]]; then
+          echo "Running ECS task digests do not match the immutable ECR images." >&2
+          exit 1
+        fi
+
+jobs:
+  build-dev:
+    <<: *defaults
+    environment:
+      APPNAME: av-scanner-v6
+      DEPLOY_ENV: DEV
+      DEPLOY_REGION: us-east-1
+      DEPLOYMENT_ENVIRONMENT: dev
+    steps: *build_and_deploy_steps
+
+  build-prod:
+    <<: *defaults
+    environment:
+      APPNAME: av-scanner-v6
+      DEPLOY_ENV: PROD
+      DEPLOY_REGION: us-east-1
+      DEPLOYMENT_ENVIRONMENT: prod
+    steps: *build_and_deploy_steps
+
+workflows:
+  build-and-deploy:
+    jobs:
+      - build-dev:
+          context: org-global
+          serial-group: << pipeline.project.slug >>/deploy-dev
+          filters:
+            branches:
+              only:
+                - develop
+      - build-prod:
+          context: org-global
+          serial-group: << pipeline.project.slug >>/deploy-prod
+          filters:
+            branches:
+              only:
+                - master

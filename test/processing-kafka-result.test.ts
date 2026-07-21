@@ -545,6 +545,14 @@ function kafkaMessage(
         commits.value += 1;
         return Promise.resolve();
       },
+      metadata: {
+        consumer: {
+          coordinatorId: 7,
+          generationId: 3,
+          groupId: "avscan-group",
+          memberId: "member-a",
+        },
+      },
       offset,
       partition,
       topic,

@@ -378,6 +378,37 @@ void test("HealthServer returns 200 when a fresh ClamAV probe succeeds", async (
   assert.equal(pingCalls, 1);
 });
 
+void test("HealthServer returns 503 until the initial Kafka join succeeds", async (t) => {
+  let kafkaReady = false;
+  const scanner: AntivirusScanner = {
+    ping: () => Promise.resolve(),
+    scan: () => Promise.resolve(false),
+  };
+  const healthServer = new HealthServer(
+    { host: TEST_HOST, port: 0 },
+    scanner,
+    createLogger({ silent: true }),
+    () => kafkaReady,
+  );
+  const address = await healthServer.start();
+  t.after(() => healthServer.stop());
+
+  const starting = await requestHealth(address.port);
+  kafkaReady = true;
+  const ready = await requestHealth(address.port);
+
+  assert.equal(starting.statusCode, 503);
+  assert.equal(
+    starting.body,
+    '{"checks":{"clamav":{"status":"up"},"kafka":{"status":"starting"}},"status":"unhealthy"}',
+  );
+  assert.equal(ready.statusCode, 200);
+  assert.equal(
+    ready.body,
+    '{"checks":{"clamav":{"status":"up"}},"status":"ok"}',
+  );
+});
+
 void test("HealthServer returns 503 and freshly recovers on the next request", async (t) => {
   let pingCalls = 0;
   const scanner: AntivirusScanner = {

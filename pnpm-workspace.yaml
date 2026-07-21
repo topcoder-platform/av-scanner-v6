@@ -1,0 +1,2 @@
+patchedDependencies:
+  "@platformatic/kafka@1.34.0": patches/@platformatic__kafka@1.34.0.patch

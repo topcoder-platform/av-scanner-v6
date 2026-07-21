@@ -2,14 +2,16 @@ FROM node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5
 
 RUN corepack enable && corepack prepare pnpm@10.33.2 --activate
 WORKDIR /app
-COPY package.json pnpm-lock.yaml ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY patches ./patches
 RUN pnpm install --frozen-lockfile
 
 FROM dependencies AS build
 
 COPY eslint.config.mjs tsconfig.json tsconfig.build.json ./
 COPY src ./src
-RUN pnpm lint && pnpm build && pnpm prune --prod
+COPY test ./test
+RUN pnpm lint && pnpm typecheck && pnpm build && pnpm test && pnpm prune --prod
 
 FROM node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS runtime
 

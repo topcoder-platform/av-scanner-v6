@@ -6,10 +6,11 @@ contract with `@platformatic/kafka`, streams S3 objects through a ClamAV
 sidecar, optionally moves them to clean or quarantine storage, and delivers the
 same Bus API or webhook result contract.
 
-The `/health` endpoint is intentionally ClamAV-dependent. Every request sends a
-new bounded `PING` command to `clamd`; connection refusal, timeout, or any
-response other than `PONG` returns HTTP 503. Kafka is excluded from this check
-so broker reconnects and group rebalances do not cause ECS task churn.
+The `/health` endpoint gates initial readiness on both ClamAV and Kafka. Every
+request sends a new bounded `PING` command to `clamd`, and the endpoint remains
+503 until the first Kafka consume stream has joined successfully. Kafka
+readiness is then latched so later broker reconnects and group rebalances do not
+cause ECS task churn.
 
 ## Runtime and processing flow
 
@@ -22,6 +23,20 @@ so broker reconnects and group rebalances do not cause ECS task churn.
 - Partition-aware Kafka scheduling preserves offset order within each partition
   while allowing up to `SCAN_CONCURRENCY` records from different partitions to
   progress. A second FIFO semaphore applies the same hard limit at clamd.
+- Fetch requests capture request-time membership and assignment activity. A
+  response that completes after a membership change—or began before SyncGroup
+  activated the assignment—is discarded before stream offsets advance. A
+  pinned Platformatic patch serializes the initial and replacement
+  committed-offset refreshes, preserves refreshes queued by overlapping joins,
+  and suppresses terminal replay during stream shutdown. The first Fetch for a
+  replacement assignment therefore cannot run with stale offsets or stall on
+  a failed refresh.
+- Every scheduled record is then fenced to its fetch-time group generation,
+  member, coordinator, and partition assignment. Commits use one
+  generation-pinned OffsetCommit request, so revoked queued work cannot start
+  and an in-flight record cannot silently rejoin and commit under a newer
+  generation. Broker acceptance is final even if local membership changes
+  immediately afterward.
 - Clamd `INSTREAM` frames are bounded to 64 KiB and the complete scan has a
   configurable timeout.
 - Invalid JSON, envelope-topic mismatches, and deterministic schema failures are
@@ -37,6 +52,7 @@ Always select the project Node version first:
 nvm use
 pnpm install --frozen-lockfile
 pnpm lint
+pnpm typecheck
 pnpm build
 pnpm test
 pnpm start
@@ -48,6 +64,13 @@ AWS/Auth0 values, then run:
 ```bash
 docker compose up --build
 ```
+
+The dev deployment runs as the dedicated `av-scanner-v6` ECS service and task
+family in the `av-scanner-service-serverless` cluster, owned by the
+`av-scanner-v6-dev` CloudFormation stack. The legacy
+`file-scanning-processor-svc` service is retained at desired count zero only as
+a rollback source. See [ECS_Deployment.md](ECS_Deployment.md) for the topology,
+zero-overlap cutover, validation, and rollback procedure.
 
 ClamAV may take several minutes to download and load its initial signature
 database. The Compose and ECS examples use a 180-second health start period.
@@ -159,7 +182,8 @@ Kafka offset commit atomic.
 
 ## Health and ECS replacement
 
-`GET /health` and `HEAD /health` return 200 only after a fresh clamd PING:
+`GET /health` and `HEAD /health` return 200 only after a fresh clamd PING and
+the initial Kafka consume stream has joined:
 
 ```json
 { "status": "ok", "checks": { "clamav": { "status": "up" } } }
@@ -170,6 +194,18 @@ data, the endpoint returns 503:
 
 ```json
 { "status": "unhealthy", "checks": { "clamav": { "status": "down" } } }
+```
+
+While ClamAV is up but the initial Kafka join is still pending, it returns 503:
+
+```json
+{
+  "status": "unhealthy",
+  "checks": {
+    "clamav": { "status": "up" },
+    "kafka": { "status": "starting" }
+  }
+}
 ```
 
 The app and ClamAV containers must both be `essential` in the ECS task. ECS does
@@ -211,19 +247,19 @@ files do not deploy themselves.
 
 For ECS `awsvpc` tasks, set `CLAMAV_HOST=127.0.0.1` because containers share a
 network namespace. Docker Compose uses the `filescanner` service hostname.
-Clamd binds `0.0.0.0:3310` so it is reachable across the Docker Compose network;
-Compose deliberately publishes no host port for it. The same bind also places
-the unauthenticated listener on an ECS task's `awsvpc` ENI even though the task
-definition declares no port mapping for 3310. Attach a security group with no
-inbound rule for port 3310 (and do not add a public-facing mapping); allow only
-the traffic needed for the app health endpoint or load balancer.
+The ClamAV image defaults to `127.0.0.1:3310`, keeping its unauthenticated ECS
+listener off the task ENI. Docker Compose explicitly builds it with
+`CLAMAV_TCP_ADDR=0.0.0.0` so the app can reach it across the private Compose
+bridge, and deliberately publishes no host port. Do not add an ECS port mapping
+or security-group ingress for 3310; allow only the traffic needed for the app
+health endpoint or load balancer.
 
 Before registering the task definition, provide real values for every
 placeholder, ensure the execution role can pull images and resolve referenced
 secrets, and ensure the task role can read, copy, and delete the configured S3
 objects. Run the scanner as an ECS Service when unhealthy-task replacement is
-required, and alarm separately on Kafka consumer errors or lag because Kafka is
-intentionally excluded from `/health`.
+required. The initial Kafka join participates in readiness; after that one-way
+latch, alarm separately on Kafka consumer errors or lag.
 
 ## Configuration
 

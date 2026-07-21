@@ -1,0 +1,74 @@
+diff --git a/dist/clients/consumer/messages-stream.js b/dist/clients/consumer/messages-stream.js
+index 3b20cdffc298704cb5ccd81a3cbdfbb6eccc48ba..74717085827f79f256807b902a3b2d763387aa40 100644
+--- a/dist/clients/consumer/messages-stream.js
++++ b/dist/clients/consumer/messages-stream.js
+@@ -306,7 +306,35 @@ export class MessagesStream extends Readable {
+         return super[Symbol.asyncIterator]();
+     }
+     _construct(callback) {
+-        this.#refreshOffsets(callback);
++        if (this.#closed || this.closed || this.destroyed) {
++            callback(null);
++            return;
++        }
++        this.#refreshOffsetsInflight = true;
++        this.#refreshOffsets(error => {
++            const refreshOffsetsPending = this.#refreshOffsetsPending;
++            this.#refreshOffsetsInflight = false;
++            this.#refreshOffsetsDestroyOnError = false;
++            this.#refreshOffsetsPending = false;
++            if (this.#closed || this.closed || this.destroyed) {
++                callback(null);
++                return;
++            }
++            if (error) {
++                callback(error);
++                return;
++            }
++            // A group join can happen while the stream's initial offsets are loading.
++            // Hand its refresh to the regular scheduler before construction completes.
++            // The scheduler marks the refresh inflight synchronously, preventing _read()
++            // from fetching stale offsets without making close() wait for the refresh.
++            if (refreshOffsetsPending) {
++                // A replacement offset refresh required during startup is fatal on error,
++                // matching the initial construction refresh rather than stalling the stream.
++                this.#scheduleRefreshOffsetsAndFetch(true);
++            }
++            callback(null);
++        });
+     }
+     _destroy(error, callback) {
+         if (this.#autocommitInterval) {
+@@ -668,6 +696,9 @@ export class MessagesStream extends Readable {
+         });
+     }
+     #scheduleRefreshOffsetsAndFetch(destroyOnError = true) {
++        if (this.#closed || this.closed || this.destroyed) {
++            return;
++        }
+         this.#refreshOffsetsDestroyOnError ||= destroyOnError;
+         /* c8 ignore next 4 - Hard to test */
+         if (this.#refreshOffsetsInflight) {
+@@ -677,9 +708,13 @@ export class MessagesStream extends Readable {
+         this.#refreshOffsetsInflight = true;
+         this.#refreshOffsets(error => {
+             const shouldDestroyOnError = this.#refreshOffsetsDestroyOnError;
++            const refreshOffsetsPending = this.#refreshOffsetsPending;
+             this.#refreshOffsetsInflight = false;
+             this.#refreshOffsetsDestroyOnError = false;
+             this.#refreshOffsetsPending = false;
++            if (this.#closed || this.closed || this.destroyed) {
++                return;
++            }
+             /* c8 ignore next 9 - Hard to test */
+             if (error) {
+                 if (shouldDestroyOnError) {
+@@ -689,7 +724,7 @@ export class MessagesStream extends Readable {
+             }
+             // A new one was scheduled while the previous one was inflight, we need to run it immediately
+             /* c8 ignore next 4 - Hard to test */
+-            if (this.#refreshOffsetsPending) {
++            if (refreshOffsetsPending) {
+                 this.#scheduleRefreshOffsetsAndFetch(shouldDestroyOnError);
+                 return;
+             }
