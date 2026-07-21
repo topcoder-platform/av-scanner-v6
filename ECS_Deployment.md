@@ -1008,24 +1008,25 @@ target group, and images through the rollback window.
 
 ## Routine CircleCI deployment
 
-CircleCI reads the eight canonical parameters from
-`/config/av-scanner-v6/deployvar`. It now fails closed unless they identify:
-
-- stack `av-scanner-v6-dev` (or `av-scanner-v6-prod`);
-- service and task family `av-scanner-v6`;
-- the reviewed environment's ECS cluster; and
-- a complete, termination-protected stack; and
-- the preserved legacy scanner service at desired/running/pending `0/0/0`.
+CircleCI authenticates using the pinned Topcoder deployment-suite helper and
+reads the eight canonical parameters from `/config/av-scanner-v6/deployvar`.
+The job assumes the repositories, CloudFormation stack, ECS cluster, and
+dedicated service already exist; it does not perform bootstrap, ownership
+transfer, or legacy-service migration.
 
 The `develop` branch deploys dev and `master` deploys prod. Each job builds both
-images with one immutable tag, verifies repository retention and current-image
-pullability, pushes both images, and supplies `ImageTag` and `EnvironmentName`
-as parameter overrides. CloudFormation still deploys the complete committed
-`deployment/fargate-service.yml`, so any reviewed infrastructure edit in that
-file is included in the change set. The job rechecks the legacy zero invariant
-before and after the update, waits for ECS stability, and verifies running task
-image digests. Production also requires `PROD_LEGACY_ECS_SERVICE` in the Circle
-context. Do not use the generic single-container deployment script.
+images with one immutable build/SHA tag, pushes them to the two configured ECR
+repositories, and supplies `ImageTag` and `EnvironmentName` to the existing
+CloudFormation stack. It waits for ECS stability and verifies that both active
+container image references match the pushed tag. CloudFormation deploys the
+complete committed `deployment/fargate-service.yml`, so reviewed infrastructure
+edits in that file are also applied.
+
+The generic `master_deploy.sh` path used by single-container v6 services is not
+used here because it generates a one-container task definition and would omit
+the ClamAV sidecar. The repository-specific
+`deployment/deploy-existing-service.sh` performs the small CloudFormation
+update while preserving the existing two-container service definition.
 
 Before enabling the branch jobs, verify the canonical values without printing
 them using the assertion in step 3. A routine deployment must never target
@@ -1071,15 +1072,17 @@ priority, roles, Kafka transport, owner values, or runtime parameter paths.
 The current template intentionally fixes the service/task family, log-group
 name, and canonical deploy-parameter path. Production must therefore use a
 separate AWS account from dev. If both environments must coexist in one
-account, parameterize all three names and their CircleCI assertions before
-creating the production stack; two stacks cannot own the same named resources.
+account, parameterize all three names and give each environment a distinct
+canonical deploy-parameter path before creating the production stack; two
+stacks cannot own the same named resources.
 
 The production target stack is `av-scanner-v6-prod`, the service/task family is
 still `av-scanner-v6`, and the template derives target group
 `av-scanner-v6-prod-tg`. Confirm the chosen listener priority is unused and that
 the ALB has target-group and rule quota. Determine TLS/mTLS parameter ARNs from
-production itself. The production CircleCI context must set the reviewed
-`PROD_AWS_ACCOUNT_ID` and `PROD_AWS_ECS_CLUSTER`.
+production itself. Before enabling the `master` job, confirm that the production
+CircleCI context authenticates to the reviewed account and that the canonical
+deploy parameters identify the discovered production stack and cluster.
 
 Repeat, in order: retention-policy verification, legacy topology reconciliation,
 eight-parameter import, full install at zero, legacy DesiredCount-only drain,
