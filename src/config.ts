@@ -56,6 +56,8 @@ export interface AppConfig {
   scan: {
     concurrency: number;
     maxFileSizeBytes: number;
+    s3NotFoundMaxAttempts: number;
+    s3NotFoundRetryBaseDelayMs: number;
   };
   webhooks: {
     timeoutMs: number;
@@ -400,6 +402,16 @@ export function loadConfig(
         environment.MAX_SCAN_FILE_SIZE_BYTES,
         500 * 1024 * 1024,
         "MAX_SCAN_FILE_SIZE_BYTES",
+      ),
+      s3NotFoundMaxAttempts: positiveInteger(
+        environment.S3_NOT_FOUND_MAX_ATTEMPTS,
+        5,
+        "S3_NOT_FOUND_MAX_ATTEMPTS",
+      ),
+      s3NotFoundRetryBaseDelayMs: positiveInteger(
+        environment.S3_NOT_FOUND_RETRY_BASE_DELAY_MS,
+        1_000,
+        "S3_NOT_FOUND_RETRY_BASE_DELAY_MS",
       ),
     },
     webhooks: {

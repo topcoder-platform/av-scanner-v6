@@ -248,6 +248,10 @@ Resources:
               Value: "524288000"
             - Name: SCAN_CONCURRENCY
               Value: "1"
+            - Name: S3_NOT_FOUND_MAX_ATTEMPTS
+              Value: "5"
+            - Name: S3_NOT_FOUND_RETRY_BASE_DELAY_MS
+              Value: "1000"
             - Name: CLAMAV_HOST
               Value: 127.0.0.1
             - Name: CLAMAV_PORT

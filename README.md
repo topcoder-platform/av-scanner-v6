@@ -20,6 +20,9 @@ cause ECS task churn.
 - `@platformatic/kafka` with `autocommit: false`, committed offsets, and the
   legacy `latest` fallback for a new consumer group.
 - AWS SDK v3 `HeadObject` before `GetObject`; object bodies are never buffered.
+- Modeled S3 missing-object responses are retried with capped exponential
+  backoff. Exhausted sources produce a fail-closed callback and commit instead
+  of repeatedly restarting the task.
 - Partition-aware Kafka scheduling preserves offset order within each partition
   while allowing up to `SCAN_CONCURRENCY` records from different partitions to
   progress. A second FIFO semaphore applies the same hard limit at clamd.
@@ -165,8 +168,15 @@ handled the same way. Both produce a fail-closed result:
 }
 ```
 
-S3, ClamAV, destination-copy, callback, and commit errors leave the failed Kafka
-offset uncommitted. Per-partition ordering prevents a later record in that
+Modeled S3 `NotFound`/`NoSuchKey` responses from source `HeadObject` or
+`GetObject` are retried five times by default with capped exponential backoff.
+If the source remains absent, the scanner emits `status: "scan-failed"`,
+`isInfected: true`, and `scanError: "s3-object-not-found"` through the
+configured callback. It retains the original URL, skips source movement and
+deletion, and commits the input offset only after callback delivery succeeds.
+
+Other S3, ClamAV, destination-copy, callback, and commit errors leave the failed
+Kafka offset uncommitted. Per-partition ordering prevents a later record in that
 partition from committing past it. Callback or commit failure leaves the source
 object in place; repeating the destination copy is safe because it targets the
 same bucket and key. After a successful commit, source deletion is best-effort:
@@ -283,6 +293,8 @@ latch, alarm separately on Kafka consumer errors or lag.
 | `AWS_REGION`                                  | `us-east-1`              | Required S3 URL and client region                          |
 | `MAX_SCAN_FILE_SIZE_BYTES`                    | `524288000`              | Preflight object limit                                     |
 | `SCAN_CONCURRENCY`                            | `1`                      | Concurrent scans per task                                  |
+| `S3_NOT_FOUND_MAX_ATTEMPTS`                   | `5`                      | Total missing-source read attempts                         |
+| `S3_NOT_FOUND_RETRY_BASE_DELAY_MS`            | `1000`                   | Initial exponential delay, capped at five seconds          |
 | `CLAMAV_HOST` / `CLAMAV_PORT`                 | `filescanner` / `3310`   | Clamd TCP endpoint                                         |
 | `CLAMAV_HEALTH_TIMEOUT_MS`                    | `2000`                   | Per-request PING timeout                                   |
 | `CLAMAV_SCAN_TIMEOUT_MS`                      | `300000`                 | Complete scan deadline                                     |

@@ -78,6 +78,14 @@
           "value": "1"
         },
         {
+          "name": "S3_NOT_FOUND_MAX_ATTEMPTS",
+          "value": "5"
+        },
+        {
+          "name": "S3_NOT_FOUND_RETRY_BASE_DELAY_MS",
+          "value": "1000"
+        },
+        {
           "name": "WHITELISTED_CLEAN_BUCKETS",
           "value": "CLEAN_BUCKET_1,CLEAN_BUCKET_2"
         },
