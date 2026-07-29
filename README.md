@@ -17,8 +17,11 @@ cause ECS task churn.
 - Node.js `22.23.1`, pinned by `.nvmrc` and the container image manifest digest.
 - ClamAV `1.5.3`, pinned by the sidecar image manifest digest.
 - TypeScript with ESM output.
-- `@platformatic/kafka` with `autocommit: false`, committed offsets, and the
-  legacy `latest` fallback for a new consumer group.
+- `@platformatic/kafka` 2.8.0, pinned exactly for broker failover and consumer
+  group recovery fixes, with `autocommit: false`, committed offsets, and the
+  legacy `latest` fallback for a new consumer group. The configured 10 MiB
+  `KAFKA_MAX_BYTES` default retains the service's existing fetch-memory limit
+  instead of adopting the 50 MiB Platformatic 2.x default.
 - AWS SDK v3 `HeadObject` before `GetObject`; object bodies are never buffered.
 - Modeled S3 missing-object responses are retried with capped exponential
   backoff. Exhausted sources produce a fail-closed callback and commit instead
@@ -29,7 +32,7 @@ cause ECS task churn.
 - Fetch requests capture request-time membership and assignment activity. A
   response that completes after a membership change—or began before SyncGroup
   activated the assignment—is discarded before stream offsets advance. A
-  pinned Platformatic patch serializes the initial and replacement
+  pinned Platformatic 2.8.0 patch serializes the initial and replacement
   committed-offset refreshes, preserves refreshes queued by overlapping joins,
   and suppresses terminal replay during stream shutdown. The first Fetch for a
   replacement assignment therefore cannot run with stale offsets or stall on

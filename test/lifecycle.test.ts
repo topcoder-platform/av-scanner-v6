@@ -185,7 +185,7 @@ void test("KafkaConsumerRunner stops promptly while consume setup is pending", a
   });
   let closeCalls = 0;
   const pendingConsume = new Promise<never>(() => undefined);
-  const fakeConsumer = {
+  const fakeConsumer = Object.assign(new EventEmitter(), {
     /** Records setup and deliberately leaves the consume request pending. */
     consume(): Promise<never> {
       signalConsumeStarted();
@@ -200,7 +200,7 @@ void test("KafkaConsumerRunner stops promptly while consume setup is pending", a
       closeCalls += 1;
       return Promise.resolve();
     },
-  } as unknown as ReturnType<KafkaConsumerFactory>;
+  }) as unknown as ReturnType<KafkaConsumerFactory>;
   let constructedOptions: Parameters<KafkaConsumerFactory>[0] | undefined;
   const consumerFactory: KafkaConsumerFactory = (options) => {
     constructedOptions = options;
@@ -234,6 +234,54 @@ void test("KafkaConsumerRunner stops promptly while consume setup is pending", a
   assert.deepEqual(constructedOptions.protocols, [
     { name: "DefaultAssignmentStrategy", version: 0 },
   ]);
+});
+
+void test("KafkaConsumerRunner routes setup-time client errors through cleanup", async () => {
+  let signalConsumeStarted: () => void = () => undefined;
+  const consumeStarted = new Promise<void>((resolve) => {
+    signalConsumeStarted = resolve;
+  });
+  let closeCalls = 0;
+  const fakeConsumer = Object.assign(new EventEmitter(), {
+    /** Records setup and deliberately leaves the consume request pending. */
+    consume(): Promise<never> {
+      signalConsumeStarted();
+      return new Promise<never>(() => undefined);
+    },
+    /** Exists for the request-time fetch fence but is not used before failure. */
+    fetch(): Promise<never> {
+      return Promise.reject(new Error("fetch must not start during setup"));
+    },
+    /** Records controlled cleanup after the client-level failure. */
+    close(): Promise<void> {
+      closeCalls += 1;
+      return Promise.resolve();
+    },
+  }) as unknown as ReturnType<KafkaConsumerFactory>;
+  const config = loadConfig({ KAFKA_URL: "unanswered.test:9092" });
+  const handler: ConsumableKafkaMessageHandler = {
+    /** No record can arrive while the fake consume request is pending. */
+    handle(): Promise<void> {
+      return Promise.resolve();
+    },
+  };
+  const runner = new KafkaConsumerRunner(
+    config.kafka,
+    handler,
+    1,
+    createLogger({ silent: true }),
+    () => fakeConsumer,
+  );
+  const clientFailure = new Error("consumer coordinator failed");
+
+  const run = runner.run();
+  await consumeStarted;
+  fakeConsumer.emit("error", clientFailure);
+
+  await assert.rejects(run, clientFailure);
+  await runner.close();
+  assert.equal(closeCalls, 1);
+  assert.equal(fakeConsumer.listenerCount("error"), 0);
 });
 
 void test("fetch fencing discards a response completed under a newer membership", async () => {

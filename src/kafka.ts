@@ -28,6 +28,15 @@ const LEGACY_GROUP_PROTOCOL = {
   version: 0,
 };
 
+/**
+ * Keeps a detached Kafka consumer error-safe if its asynchronous close fails.
+ *
+ * The close failure itself remains visible to the application shutdown path.
+ *
+ * @returns Nothing.
+ */
+const ignoreDetachedKafkaError = (): void => undefined;
+
 /** Factory boundary used to construct the Platformatic consumer. */
 export type KafkaConsumerFactory = (
   options: ConsumerOptions<Buffer, Buffer, Buffer, Buffer>,
@@ -93,13 +102,13 @@ interface KafkaFetchConsumer {
 /**
  * Discards Fetch responses whose request began under an older membership.
  *
- * Platformatic 1.34 records consumer metadata when it pushes a response, not
- * when it sends the Fetch request. A response from generation N can therefore
- * arrive after generation N+1 has refreshed its committed offsets and be
- * mislabeled as current. A request can also start after JoinGroup supplies the
- * new identity but before SyncGroup activates its assignment. Returning the
- * same response envelope with no topic responses makes MessagesStream schedule
- * a fresh Fetch without advancing its local offsets or admitting stale records.
+ * Platformatic records consumer metadata when it pushes a response, not when
+ * it sends the Fetch request. A response from generation N can therefore arrive
+ * after generation N+1 has refreshed its committed offsets and be mislabeled
+ * as current. A request can also start after JoinGroup supplies the new identity
+ * but before SyncGroup activates its assignment. Returning the same response
+ * envelope with no topic responses makes MessagesStream schedule a fresh Fetch
+ * without advancing its local offsets or admitting stale records.
  *
  * @param consumer - Consumer whose Fetch boundary should be fenced.
  * @param onDiscard - Optional observability hook for a stale successful Fetch.
@@ -815,6 +824,7 @@ export async function processMessageStream(
 export class KafkaConsumerRunner {
   private consumer?: PlatformaticConsumer;
   private consumerClosePromise?: Promise<void>;
+  private rejectConsumerFailure?: (error: Error) => void;
   private fullClosePromise?: Promise<void>;
   private intakeStopPromise?: Promise<void>;
   private readonly processingStopController = new AbortController();
@@ -826,6 +836,28 @@ export class KafkaConsumerRunner {
   private streamClosePromise?: Promise<void>;
   private ready = false;
   private stopRequested = false;
+
+  /**
+   * Routes terminal Platformatic consumer errors through the runner promise.
+   *
+   * Setup-time failures reject the consume race. Once a stream exists, destroying
+   * it with the same error rejects the async iterator after active handlers drain.
+   *
+   * @param error - Terminal error emitted by the Platformatic consumer.
+   * @returns Nothing; the active runner promise observes the failure.
+   */
+  private readonly consumerErrorListener = (error: Error): void => {
+    const failure =
+      error instanceof Error ? error : new Error(String(error ?? "Kafka error"));
+    this.logger.error("Kafka consumer client error", {
+      error: failure.message,
+    });
+    if (this.stream) {
+      this.stream.destroy(failure);
+      return;
+    }
+    this.rejectConsumerFailure?.(failure);
+  };
 
   /**
    * Creates the long-running Kafka consumer.
@@ -885,6 +917,10 @@ export class KafkaConsumerRunner {
       ...(this.config.tls ? { tls: this.config.tls } : {}),
     };
     this.consumer = this.consumerFactory(options);
+    const consumerFailure = new Promise<never>((_resolve, reject) => {
+      this.rejectConsumerFailure = reject;
+    });
+    this.consumer.on("error", this.consumerErrorListener);
     fenceKafkaFetchResponses(this.consumer, () => {
       this.logger.warn(
         "Discarded stale Kafka fetch response after assignment change",
@@ -906,6 +942,7 @@ export class KafkaConsumerRunner {
     const consumeOutcome = await Promise.race([
       consumePromise.then((stream) => ({ stream, type: "stream" as const })),
       this.stopRequest.then(() => ({ type: "stopped" as const })),
+      consumerFailure,
     ]);
     if (consumeOutcome.type === "stopped") {
       void consumePromise
@@ -1048,9 +1085,16 @@ export class KafkaConsumerRunner {
       return Promise.resolve();
     }
     this.consumerClosePromise = (async () => {
+      let consumerClosed = false;
       try {
         await Promise.resolve(consumer.close(true));
+        consumerClosed = true;
       } finally {
+        consumer.removeListener("error", this.consumerErrorListener);
+        if (!consumerClosed) {
+          consumer.on("error", ignoreDetachedKafkaError);
+        }
+        this.rejectConsumerFailure = undefined;
         if (this.consumer === consumer) {
           this.consumer = undefined;
         }
