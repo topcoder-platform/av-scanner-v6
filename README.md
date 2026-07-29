@@ -6,10 +6,11 @@ contract with `@platformatic/kafka`, streams S3 objects through a ClamAV
 sidecar, optionally moves them to clean or quarantine storage, and delivers the
 same Bus API or webhook result contract.
 
-The `/health` endpoint is intentionally ClamAV-dependent. Every request sends a
-new bounded `PING` command to `clamd`; connection refusal, timeout, or any
-response other than `PONG` returns HTTP 503. Kafka is excluded from this check
-so broker reconnects and group rebalances do not cause ECS task churn.
+The `/health` endpoint gates initial readiness on both ClamAV and Kafka. Every
+request sends a new bounded `PING` command to `clamd`, and the endpoint remains
+503 until the first Kafka consume stream has joined successfully. Kafka
+readiness is then latched so later broker reconnects and group rebalances do not
+cause ECS task churn.
 
 ## Runtime and processing flow
 
@@ -19,9 +20,26 @@ so broker reconnects and group rebalances do not cause ECS task churn.
 - `@platformatic/kafka` with `autocommit: false`, committed offsets, and the
   legacy `latest` fallback for a new consumer group.
 - AWS SDK v3 `HeadObject` before `GetObject`; object bodies are never buffered.
+- Modeled S3 missing-object responses are retried with capped exponential
+  backoff. Exhausted sources produce a fail-closed callback and commit instead
+  of repeatedly restarting the task.
 - Partition-aware Kafka scheduling preserves offset order within each partition
   while allowing up to `SCAN_CONCURRENCY` records from different partitions to
   progress. A second FIFO semaphore applies the same hard limit at clamd.
+- Fetch requests capture request-time membership and assignment activity. A
+  response that completes after a membership change—or began before SyncGroup
+  activated the assignment—is discarded before stream offsets advance. A
+  pinned Platformatic patch serializes the initial and replacement
+  committed-offset refreshes, preserves refreshes queued by overlapping joins,
+  and suppresses terminal replay during stream shutdown. The first Fetch for a
+  replacement assignment therefore cannot run with stale offsets or stall on
+  a failed refresh.
+- Every scheduled record is then fenced to its fetch-time group generation,
+  member, coordinator, and partition assignment. Commits use one
+  generation-pinned OffsetCommit request, so revoked queued work cannot start
+  and an in-flight record cannot silently rejoin and commit under a newer
+  generation. Broker acceptance is final even if local membership changes
+  immediately afterward.
 - Clamd `INSTREAM` frames are bounded to 64 KiB and the complete scan has a
   configurable timeout.
 - Invalid JSON, envelope-topic mismatches, and deterministic schema failures are
@@ -37,6 +55,7 @@ Always select the project Node version first:
 nvm use
 pnpm install --frozen-lockfile
 pnpm lint
+pnpm typecheck
 pnpm build
 pnpm test
 pnpm start
@@ -48,6 +67,13 @@ AWS/Auth0 values, then run:
 ```bash
 docker compose up --build
 ```
+
+The dev deployment runs as the dedicated `av-scanner-v6` ECS service and task
+family in the `av-scanner-service-serverless` cluster, owned by the
+`av-scanner-v6-dev` CloudFormation stack. The legacy
+`file-scanning-processor-svc` service is retained at desired count zero only as
+a rollback source. See [ECS_Deployment.md](ECS_Deployment.md) for the topology,
+zero-overlap cutover, validation, and rollback procedure.
 
 ClamAV may take several minutes to download and load its initial signature
 database. The Compose and ECS examples use a 180-second health start period.
@@ -91,7 +117,7 @@ Supported callback modes are:
   `callbackKafkaTopic`.
 - `webhook`: send the result payload directly with `get` or `post` and
   `no-auth`, `bearer`, `basic`, or `api-key` authentication.
-- `no-callback`: complete scanning, movement, and alerting without notification.
+- `no-callback`: complete scanning and optional movement without notification.
 
 When `moveFile` is true, both destination buckets are required. The source is
 copied to the selected bucket under `fileName`, the callback succeeds, and the
@@ -142,14 +168,20 @@ handled the same way. Both produce a fail-closed result:
 }
 ```
 
-S3, ClamAV, destination-copy, callback, and commit errors leave the failed Kafka
-offset uncommitted. Per-partition ordering prevents a later record in that
+Modeled S3 `NotFound`/`NoSuchKey` responses from source `HeadObject` or
+`GetObject` are retried five times by default with capped exponential backoff.
+If the source remains absent, the scanner emits `status: "scan-failed"`,
+`isInfected: true`, and `scanError: "s3-object-not-found"` through the
+configured callback. It retains the original URL, skips source movement and
+deletion, and commits the input offset only after callback delivery succeeds.
+
+Other S3, ClamAV, destination-copy, callback, and commit errors leave the failed
+Kafka offset uncommitted. Per-partition ordering prevents a later record in that
 partition from committing past it. Callback or commit failure leaves the source
 object in place; repeating the destination copy is safe because it targets the
 same bucket and key. After a successful commit, source deletion is best-effort:
 a deletion failure is logged and can leave the original copy behind, but the
-completed event is not replayed. Opsgenie delivery is scheduled after commit,
-is best-effort, and does not block the commit.
+completed event is not replayed.
 
 Kafka processing and external callbacks are intentionally at-least-once. A
 process crash or forced task stop after a remote callback succeeds but before
@@ -160,7 +192,8 @@ Kafka offset commit atomic.
 
 ## Health and ECS replacement
 
-`GET /health` and `HEAD /health` return 200 only after a fresh clamd PING:
+`GET /health` and `HEAD /health` return 200 only after a fresh clamd PING and
+the initial Kafka consume stream has joined:
 
 ```json
 { "status": "ok", "checks": { "clamav": { "status": "up" } } }
@@ -173,6 +206,18 @@ data, the endpoint returns 503:
 { "status": "unhealthy", "checks": { "clamav": { "status": "down" } } }
 ```
 
+While ClamAV is up but the initial Kafka join is still pending, it returns 503:
+
+```json
+{
+  "status": "unhealthy",
+  "checks": {
+    "clamav": { "status": "up" },
+    "kafka": { "status": "starting" }
+  }
+}
+```
+
 The app and ClamAV containers must both be `essential` in the ECS task. ECS does
 not import a Dockerfile health check automatically, so the registered task
 definition must declare the app container health command. Ready-to-adapt
@@ -181,7 +226,7 @@ artifacts are provided as a registration-ready Fargate skeleton in
 in `deployment/ecs-container-definitions.example.json`. Replace their account,
 region, role, image, logging, environment, and secret placeholders before use.
 Remove optional secret entries that the deployment does not use, such as mTLS
-material or an Opsgenie API key when those features are disabled.
+material when that feature is disabled.
 
 The examples set the app container's `stopTimeout` to the Fargate maximum of
 120 seconds. This allows the SIGTERM handler's bounded in-flight Kafka drain
@@ -212,19 +257,19 @@ files do not deploy themselves.
 
 For ECS `awsvpc` tasks, set `CLAMAV_HOST=127.0.0.1` because containers share a
 network namespace. Docker Compose uses the `filescanner` service hostname.
-Clamd binds `0.0.0.0:3310` so it is reachable across the Docker Compose network;
-Compose deliberately publishes no host port for it. The same bind also places
-the unauthenticated listener on an ECS task's `awsvpc` ENI even though the task
-definition declares no port mapping for 3310. Attach a security group with no
-inbound rule for port 3310 (and do not add a public-facing mapping); allow only
-the traffic needed for the app health endpoint or load balancer.
+The ClamAV image defaults to `127.0.0.1:3310`, keeping its unauthenticated ECS
+listener off the task ENI. Docker Compose explicitly builds it with
+`CLAMAV_TCP_ADDR=0.0.0.0` so the app can reach it across the private Compose
+bridge, and deliberately publishes no host port. Do not add an ECS port mapping
+or security-group ingress for 3310; allow only the traffic needed for the app
+health endpoint or load balancer.
 
 Before registering the task definition, provide real values for every
 placeholder, ensure the execution role can pull images and resolve referenced
 secrets, and ensure the task role can read, copy, and delete the configured S3
 objects. Run the scanner as an ECS Service when unhealthy-task replacement is
-required, and alarm separately on Kafka consumer errors or lag because Kafka is
-intentionally excluded from `/health`.
+required. The initial Kafka join participates in readiness; after that one-way
+latch, alarm separately on Kafka consumer errors or lag.
 
 ## Configuration
 
@@ -248,6 +293,8 @@ intentionally excluded from `/health`.
 | `AWS_REGION`                                  | `us-east-1`              | Required S3 URL and client region                          |
 | `MAX_SCAN_FILE_SIZE_BYTES`                    | `524288000`              | Preflight object limit                                     |
 | `SCAN_CONCURRENCY`                            | `1`                      | Concurrent scans per task                                  |
+| `S3_NOT_FOUND_MAX_ATTEMPTS`                   | `5`                      | Total missing-source read attempts                         |
+| `S3_NOT_FOUND_RETRY_BASE_DELAY_MS`            | `1000`                   | Initial exponential delay, capped at five seconds          |
 | `CLAMAV_HOST` / `CLAMAV_PORT`                 | `filescanner` / `3310`   | Clamd TCP endpoint                                         |
 | `CLAMAV_HEALTH_TIMEOUT_MS`                    | `2000`                   | Per-request PING timeout                                   |
 | `CLAMAV_SCAN_TIMEOUT_MS`                      | `300000`                 | Complete scan deadline                                     |
@@ -260,13 +307,8 @@ intentionally excluded from `/health`.
 | `AUTH0_CLIENT_ID` / `AUTH0_CLIENT_SECRET`     | unset                    | Client credentials for kafka callbacks                     |
 | `AUTH0_PROXY_SERVER_URL`                      | unset                    | Optional Topcoder token proxy endpoint                     |
 | `TOKEN_CACHE_TIME`                            | `300`                    | Maximum token cache lifetime in seconds                    |
-| `WEBHOOK_TIMEOUT_MS`                          | `15000`                  | HTTP callback/Auth0/Opsgenie timeout                       |
-| `OPSGENIE_ENABLED`                            | `false`                  | Enable infected-file alerts                                |
-| `OPSGENIE_API_URL`                            | Opsgenie v2 alerts URL   | Alert endpoint                                             |
-| `OPSGENIE_API_KEY`                            | unset                    | Required when alerts are enabled                           |
-| `OPSGENIE_SOURCE`                             | `DevOps`                 | Alert source                                               |
+| `WEBHOOK_TIMEOUT_MS`                          | `15000`                  | HTTP callback/Auth0 timeout                                |
 
-The legacy misspelling `OPGENIE_ENABLED` remains accepted as a fallback.
 `kafka+ssl://` enables TLS and defaults to peer verification with Node's system
 trust store. Bare brokers alongside it inherit the same TLS transport because
 the Kafka client has one transport setting; explicit `kafka://` and

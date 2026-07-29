@@ -1,0 +1,507 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Dedicated AV Scanner v6 ECS Fargate service and load-balancer health target.
+
+Parameters:
+  ECSClusterName:
+    Type: String
+    Description: Existing ECS cluster that hosts the scanner service.
+  SecurityGroupIDs:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+  SubnetIDs:
+    Type: List<AWS::EC2::Subnet::Id>
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  HttpsListenerArn:
+    Type: String
+    Description: Existing services-alb HTTPS listener used to associate the dedicated target group.
+  AttachmentRulePriority:
+    Type: Number
+    Default: 650
+    MinValue: 1
+    MaxValue: 50000
+  DesiredCount:
+    Type: Number
+    MinValue: 0
+  ImageTag:
+    Type: String
+    AllowedPattern: "[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}"
+    ConstraintDescription: Must be a valid non-empty Docker tag.
+  AppRepositoryName:
+    Type: String
+  ClamAvRepositoryName:
+    Type: String
+  TaskCpu:
+    Type: String
+    Default: "2048"
+    AllowedValues:
+      - "1024"
+      - "2048"
+      - "4096"
+      - "8192"
+      - "16384"
+  TaskMemory:
+    Type: String
+    Default: "16384"
+  AppContainerCpu:
+    Type: Number
+    Default: 1024
+    MinValue: 0
+  AppContainerMemory:
+    Type: Number
+    Default: 8192
+    MinValue: 4
+  ClamAvContainerCpu:
+    Type: Number
+    Default: 1024
+    MinValue: 0
+  ClamAvContainerMemory:
+    Type: Number
+    Default: 8192
+    MinValue: 4
+  TaskRoleName:
+    Type: String
+  TaskExecutionRoleName:
+    Type: String
+  RuntimeParameterPrefix:
+    Type: String
+    AllowedPattern: "/.+"
+    Description: Existing scanner-specific SecureString parameter path.
+  CommonParameterPrefix:
+    Type: String
+    AllowedPattern: "/.+"
+  DeployParameterPrefix:
+    Type: String
+    AllowedPattern: "/.+"
+  EnvironmentName:
+    Type: String
+    AllowedValues:
+      - dev
+      - prod
+  ApplicationOwnerEmail:
+    Type: String
+    NoEcho: true
+    Description: Existing topcoder:application:OwnerEmail service tag value.
+  ApplicationAltOwnerEmail:
+    Type: String
+    NoEcho: true
+    Description: Existing topcoder:application:AltOwnerEmail service tag value.
+  ApplicationOwnerManagerEmail:
+    Type: String
+    NoEcho: true
+    Description: Existing topcoder:application:OwnerMgrEmail service tag value.
+  ApplicationOwnerDirectorEmail:
+    Type: String
+    NoEcho: true
+    Description: Existing topcoder:application:OwnerDirectorEmail service tag value.
+  KafkaClientCertParameterArn:
+    Type: String
+    Default: ""
+    Description: Optional SSM parameter ARN containing the Kafka client certificate.
+  KafkaClientKeyParameterArn:
+    Type: String
+    Default: ""
+    Description: Optional SSM parameter ARN containing the Kafka client private key.
+  KafkaCaParameterArn:
+    Type: String
+    Default: ""
+    Description: Optional SSM parameter ARN containing the Kafka CA certificate.
+  KafkaRejectUnauthorized:
+    Type: String
+    Default: ""
+    AllowedValues:
+      - ""
+      - "true"
+      - "false"
+
+Rules:
+  KafkaClientCertificatePair:
+    Assertions:
+      - Assert:
+          Fn::Or:
+            - Fn::And:
+                - Fn::Equals:
+                    - !Ref KafkaClientCertParameterArn
+                    - ""
+                - Fn::Equals:
+                    - !Ref KafkaClientKeyParameterArn
+                    - ""
+            - Fn::And:
+                - Fn::Not:
+                    - Fn::Equals:
+                        - !Ref KafkaClientCertParameterArn
+                        - ""
+                - Fn::Not:
+                    - Fn::Equals:
+                        - !Ref KafkaClientKeyParameterArn
+                        - ""
+        AssertDescription: Kafka client certificate and private-key ARNs must be supplied together.
+
+Conditions:
+  HasKafkaClientCertificate:
+    !Not [!Equals [!Ref KafkaClientCertParameterArn, ""]]
+  HasKafkaClientKey: !Not [!Equals [!Ref KafkaClientKeyParameterArn, ""]]
+  HasKafkaCa: !Not [!Equals [!Ref KafkaCaParameterArn, ""]]
+  HasKafkaVerificationSetting: !Not [!Equals [!Ref KafkaRejectUnauthorized, ""]]
+
+Resources:
+  ScannerLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: /aws/ecs/av-scanner-v6
+      RetentionInDays: 14
+
+  ScannerTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub av-scanner-v6-${EnvironmentName}-tg
+      VpcId: !Ref VpcId
+      TargetType: ip
+      Protocol: HTTP
+      ProtocolVersion: HTTP1
+      Port: 80
+      HealthCheckEnabled: true
+      HealthCheckProtocol: HTTP
+      HealthCheckPort: traffic-port
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 120
+      HealthCheckTimeoutSeconds: 30
+      HealthyThresholdCount: 5
+      UnhealthyThresholdCount: 5
+      Matcher:
+        HttpCode: "200"
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: "60"
+
+  ScannerAttachmentRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref HttpsListenerArn
+      Priority: !Ref AttachmentRulePriority
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref ScannerTargetGroup
+      Conditions:
+        - Field: path-pattern
+          PathPatternConfig:
+            Values:
+              - !Sub /__av-scanner-v6-${EnvironmentName}-attachment-only
+
+  ScannerTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Family: av-scanner-v6
+      Cpu: !Ref TaskCpu
+      Memory: !Ref TaskMemory
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+      ExecutionRoleArn: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${TaskExecutionRoleName}
+      TaskRoleArn: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${TaskRoleName}
+      ContainerDefinitions:
+        - Name: app
+          Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/${AppRepositoryName}:${ImageTag}
+          Essential: true
+          Cpu: !Ref AppContainerCpu
+          Memory: !Ref AppContainerMemory
+          ReadonlyRootFilesystem: true
+          StopTimeout: 120
+          LinuxParameters:
+            InitProcessEnabled: true
+          PortMappings:
+            - ContainerPort: 3000
+              HostPort: 3000
+              Protocol: tcp
+              AppProtocol: http
+          DependsOn:
+            - ContainerName: filescanner
+              Condition: HEALTHY
+          Environment:
+            - Name: NODE_ENV
+              Value: production
+            - Name: HOST
+              Value: 0.0.0.0
+            - Name: PORT
+              Value: "3000"
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: KAFKA_CLIENT_ID
+              Value: av-scanner-v6
+            - Name: KAFKA_GROUP_ID
+              Value: file-scanner-processor
+            - Name: KAFKA_ORIGINATOR
+              Value: file-scanner-processor
+            - Name: KAFKA_SESSION_TIMEOUT_MS
+              Value: "30000"
+            - Name: KAFKA_HEARTBEAT_INTERVAL_MS
+              Value: "3000"
+            - Name: KAFKA_MAX_WAIT_TIME_MS
+              Value: "500"
+            - Name: MAX_SCAN_FILE_SIZE_BYTES
+              Value: "524288000"
+            - Name: SCAN_CONCURRENCY
+              Value: "1"
+            - Name: S3_NOT_FOUND_MAX_ATTEMPTS
+              Value: "5"
+            - Name: S3_NOT_FOUND_RETRY_BASE_DELAY_MS
+              Value: "1000"
+            - Name: CLAMAV_HOST
+              Value: 127.0.0.1
+            - Name: CLAMAV_PORT
+              Value: "3310"
+            - Name: CLAMAV_HEALTH_TIMEOUT_MS
+              Value: "2000"
+            - Name: CLAMAV_SCAN_TIMEOUT_MS
+              Value: "300000"
+            - Name: WEBHOOK_TIMEOUT_MS
+              Value: "15000"
+            - !If
+              - HasKafkaVerificationSetting
+              - Name: KAFKA_REJECT_UNAUTHORIZED
+                Value: !Ref KafkaRejectUnauthorized
+              - !Ref AWS::NoValue
+          Secrets:
+            - Name: AUTH0_CLIENT_ID
+              ValueFrom: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${RuntimeParameterPrefix}/AUTH0_CLIENT_ID
+            - Name: AUTH0_CLIENT_SECRET
+              ValueFrom: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${RuntimeParameterPrefix}/AUTH0_CLIENT_SECRET
+            - Name: AVSCAN_TOPIC
+              ValueFrom: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${RuntimeParameterPrefix}/AVSCAN_TOPIC
+            - Name: BUSAPI_EVENTS_URL
+              ValueFrom: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${RuntimeParameterPrefix}/BUSAPI_EVENTS_URL
+            - Name: LOG_LEVEL
+              ValueFrom: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${RuntimeParameterPrefix}/LOG_LEVEL
+            - Name: WHITELISTED_CLEAN_BUCKETS
+              ValueFrom: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${RuntimeParameterPrefix}/WHITELISTED_CLEAN_BUCKETS
+            - Name: WHITELISTED_QUARANTINE_BUCKETS
+              ValueFrom: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${RuntimeParameterPrefix}/WHITELISTED_QUARANTINE_BUCKETS
+            - Name: WHITELISTED_KAFKA_TOPICS
+              ValueFrom: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${RuntimeParameterPrefix}/WHITELISTED_KAFKA_TOPICS
+            - Name: AUTH0_URL
+              ValueFrom: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${CommonParameterPrefix}/AUTH0_URL
+            - Name: AUTH0_AUDIENCE
+              ValueFrom: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${CommonParameterPrefix}/AUTH0_AUDIENCE
+            - Name: AUTH0_PROXY_SERVER_URL
+              ValueFrom: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${CommonParameterPrefix}/AUTH0_PROXY_SERVER_URL
+            - Name: KAFKA_URL
+              ValueFrom: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${CommonParameterPrefix}/KAFKA_URL
+            - Name: KAFKA_MAX_BYTES
+              ValueFrom: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${CommonParameterPrefix}/KAFKA_MAXBYTES
+            - Name: TOKEN_CACHE_TIME
+              ValueFrom: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${CommonParameterPrefix}/TOKEN_CACHE_TIME
+            - !If
+              - HasKafkaClientCertificate
+              - Name: KAFKA_CLIENT_CERT
+                ValueFrom: !Ref KafkaClientCertParameterArn
+              - !Ref AWS::NoValue
+            - !If
+              - HasKafkaClientKey
+              - Name: KAFKA_CLIENT_CERT_KEY
+                ValueFrom: !Ref KafkaClientKeyParameterArn
+              - !Ref AWS::NoValue
+            - !If
+              - HasKafkaCa
+              - Name: KAFKA_CA_CERT
+                ValueFrom: !Ref KafkaCaParameterArn
+              - !Ref AWS::NoValue
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - >-
+                node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ScannerLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: app
+        - Name: filescanner
+          Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/${ClamAvRepositoryName}:${ImageTag}
+          Essential: true
+          Cpu: !Ref ClamAvContainerCpu
+          Memory: !Ref ClamAvContainerMemory
+          ReadonlyRootFilesystem: false
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - clamdscan --config-file=/etc/clamav/clamd.conf --ping=1
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 300
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ScannerLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: clamav
+      Tags:
+        - Key: topcoder:application:Name
+          Value: AV Scanner v6
+        - Key: topcoder:application:Type
+          Value: Processor
+        - Key: topcoder:application:HostingType
+          Value: SaaS
+        - Key: topcoder:operations:Environment
+          Value: !Ref EnvironmentName
+        - Key: topcoder:operations:DevOpsIntegration
+          Value: CircleCI
+        - Key: topcoder:operations:SourceManagement
+          Value: https://github.com/topcoder-platform/av-scanner-v6
+
+  ECSService:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - ScannerAttachmentRule
+    Properties:
+      Cluster: !Ref ECSClusterName
+      TaskDefinition: !Ref ScannerTaskDefinition
+      LaunchType: FARGATE
+      PlatformVersion: LATEST
+      ServiceName: av-scanner-v6
+      SchedulingStrategy: REPLICA
+      DesiredCount: !Ref DesiredCount
+      AvailabilityZoneRebalancing: DISABLED
+      HealthCheckGracePeriodSeconds: 900
+      LoadBalancers:
+        - ContainerName: app
+          ContainerPort: 3000
+          TargetGroupArn: !Ref ScannerTargetGroup
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups: !Ref SecurityGroupIDs
+          Subnets: !Ref SubnetIDs
+      DeploymentConfiguration:
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+      DeploymentController:
+        Type: ECS
+      ServiceConnectConfiguration:
+        Enabled: false
+      EnableECSManagedTags: true
+      PropagateTags: TASK_DEFINITION
+      Tags:
+        - Key: topcoder:application:Name
+          Value: AV Scanner v6
+        - Key: topcoder:application:Criticality
+          Value: Low
+        - Key: topcoder:application:Type
+          Value: Processor
+        - Key: topcoder:application:HostingType
+          Value: SaaS
+        - Key: topcoder:application:OwnerEmail
+          Value: !Ref ApplicationOwnerEmail
+        - Key: topcoder:application:AltOwnerEmail
+          Value: !Ref ApplicationAltOwnerEmail
+        - Key: topcoder:application:OwnerMgrEmail
+          Value: !Ref ApplicationOwnerManagerEmail
+        - Key: topcoder:application:OwnerDirectorEmail
+          Value: !Ref ApplicationOwnerDirectorEmail
+        - Key: topcoder:operations:Environment
+          Value: !Ref EnvironmentName
+        - Key: topcoder:operations:SourceManagement
+          Value: https://github.com/topcoder-platform/av-scanner-v6
+        - Key: topcoder:operations:DevOpsIntegration
+          Value: CircleCI
+
+  DeployCloudFormationStackParameter:
+    Type: AWS::SSM::Parameter
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub ${DeployParameterPrefix}/AWS_CLOUDFORMATION_STACK_NAME
+      Type: String
+      Value: !Ref AWS::StackName
+  DeployClusterParameter:
+    Type: AWS::SSM::Parameter
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub ${DeployParameterPrefix}/AWS_ECS_CLUSTER
+      Type: String
+      Value: !Ref ECSClusterName
+  DeployServiceParameter:
+    Type: AWS::SSM::Parameter
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub ${DeployParameterPrefix}/AWS_ECS_SERVICE
+      Type: String
+      Value: av-scanner-v6
+  DeployTaskFamilyParameter:
+    Type: AWS::SSM::Parameter
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub ${DeployParameterPrefix}/AWS_ECS_TASK_FAMILY
+      Type: String
+      Value: av-scanner-v6
+  DeployAppContainerParameter:
+    Type: AWS::SSM::Parameter
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub ${DeployParameterPrefix}/AWS_ECS_APP_CONTAINER_NAME
+      Type: String
+      Value: app
+  DeployClamAvContainerParameter:
+    Type: AWS::SSM::Parameter
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub ${DeployParameterPrefix}/AWS_ECS_CLAMAV_CONTAINER_NAME
+      Type: String
+      Value: filescanner
+  DeployAppRepositoryParameter:
+    Type: AWS::SSM::Parameter
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub ${DeployParameterPrefix}/AWS_REPOSITORY
+      Type: String
+      Value: !Ref AppRepositoryName
+  DeployClamAvRepositoryParameter:
+    Type: AWS::SSM::Parameter
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub ${DeployParameterPrefix}/AWS_REPOSITORY_CLAMAV
+      Type: String
+      Value: !Ref ClamAvRepositoryName
+
+Outputs:
+  ClusterName:
+    Description: Existing cluster used by the service.
+    Value: !Ref ECSClusterName
+  ECSService:
+    Description: Dedicated scanner service ARN.
+    Value: !Ref ECSService
+  TaskDefinitionArn:
+    Value: !Ref ScannerTaskDefinition
+  AppRepositoryUri:
+    Value: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/${AppRepositoryName}
+  ClamAvRepositoryUri:
+    Value: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/${ClamAvRepositoryName}
+  DeployParameterPath:
+    Value: !Ref DeployParameterPrefix
+  LogGroupName:
+    Value: !Ref ScannerLogGroup
+  TargetGroupArn:
+    Value: !Ref ScannerTargetGroup
+  ListenerRuleArn:
+    Value: !Ref ScannerAttachmentRule

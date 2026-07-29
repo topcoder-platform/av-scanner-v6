@@ -1,0 +1,106 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Legacy scanner service retained at zero as the AV Scanner v6 rollback source.
+
+Parameters:
+  ECSClusterName:
+    Type: String
+  ECSServiceName:
+    Type: String
+  SecurityGroupIDs:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+  SubnetIDs:
+    Type: List<AWS::EC2::Subnet::Id>
+  TargetGroupArn:
+    Type: String
+  CurrentTaskDefinitionArn:
+    Type: String
+    Description: Task definition ARN reported by the live ECS service.
+  DesiredCount:
+    Type: Number
+    MinValue: 0
+  EnvironmentName:
+    Type: String
+    AllowedValues:
+      - dev
+      - prod
+  ApplicationOwnerEmail:
+    Type: String
+    NoEcho: true
+  ApplicationAltOwnerEmail:
+    Type: String
+    NoEcho: true
+  ApplicationOwnerManagerEmail:
+    Type: String
+    NoEcho: true
+  ApplicationOwnerDirectorEmail:
+    Type: String
+    NoEcho: true
+
+Resources:
+  ECSService:
+    Type: AWS::ECS::Service
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Cluster: !Ref ECSClusterName
+      TaskDefinition: !Ref CurrentTaskDefinitionArn
+      LaunchType: FARGATE
+      PlatformVersion: LATEST
+      ServiceName: !Ref ECSServiceName
+      SchedulingStrategy: REPLICA
+      DesiredCount: !Ref DesiredCount
+      AvailabilityZoneRebalancing: DISABLED
+      HealthCheckGracePeriodSeconds: 900
+      LoadBalancers:
+        - ContainerName: app
+          ContainerPort: 3000
+          TargetGroupArn: !Ref TargetGroupArn
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups: !Ref SecurityGroupIDs
+          Subnets: !Ref SubnetIDs
+      DeploymentConfiguration:
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+      DeploymentController:
+        Type: ECS
+      ServiceConnectConfiguration:
+        Enabled: false
+      EnableECSManagedTags: true
+      PropagateTags: TASK_DEFINITION
+      Tags:
+        - Key: topcoder:application:Name
+          Value: AntiVirus File Scanner Service
+        - Key: topcoder:application:Criticality
+          Value: Low
+        - Key: topcoder:application:Type
+          Value: Processor
+        - Key: topcoder:application:HostingType
+          Value: SaaS
+        - Key: topcoder:application:OwnerEmail
+          Value: !Ref ApplicationOwnerEmail
+        - Key: topcoder:application:AltOwnerEmail
+          Value: !Ref ApplicationAltOwnerEmail
+        - Key: topcoder:application:OwnerMgrEmail
+          Value: !Ref ApplicationOwnerManagerEmail
+        - Key: topcoder:application:OwnerDirectorEmail
+          Value: !Ref ApplicationOwnerDirectorEmail
+        - Key: topcoder:operations:Environment
+          Value: !Ref EnvironmentName
+        - Key: topcoder:operations:SourceManagement
+          Value: https://github.com/topcoder-platform/av-scanner-v6
+        - Key: topcoder:operations:DevOpsIntegration
+          Value: CircleCI
+
+Outputs:
+  ClusterName:
+    Value: !Ref ECSClusterName
+  ECSService:
+    Value: !Ref ECSService
+  ReconciledTaskDefinitionArn:
+    Value: !Ref CurrentTaskDefinitionArn

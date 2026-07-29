@@ -16,6 +16,9 @@ interface HealthResponse {
     clamav: {
       status: "down" | "up";
     };
+    kafka?: {
+      status: "starting";
+    };
   };
   status: "ok" | "unhealthy";
 }
@@ -43,7 +46,7 @@ function writeJson(
   response.end(requestMethod === "HEAD" ? undefined : body);
 }
 
-/** HTTP server whose /health status is a fresh bounded ClamAV dependency probe. */
+/** HTTP server with initial Kafka readiness and fresh bounded ClamAV probes. */
 export class HealthServer {
   private readonly server: Server;
 
@@ -53,11 +56,13 @@ export class HealthServer {
    * @param config - HTTP bind address.
    * @param scanner - ClamAV client whose PING has its own short timeout.
    * @param logger - Structured process logger.
+   * @param isReady - One-way initial Kafka readiness signal.
    */
   constructor(
     private readonly config: AppConfig["http"],
     private readonly scanner: AntivirusScanner,
     private readonly logger: Logger,
+    private readonly isReady: () => boolean = () => true,
   ) {
     this.server = createServer((request, response) => {
       void this.handleRequest(request, response);
@@ -143,6 +148,16 @@ export class HealthServer {
 
     try {
       await this.scanner.ping();
+      if (!this.isReady()) {
+        writeJson(response, request.method, 503, {
+          checks: {
+            clamav: { status: "up" },
+            kafka: { status: "starting" },
+          },
+          status: "unhealthy",
+        });
+        return;
+      }
       writeJson(response, request.method, 200, {
         checks: { clamav: { status: "up" } },
         status: "ok",

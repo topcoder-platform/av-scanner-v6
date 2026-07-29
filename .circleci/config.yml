@@ -1,0 +1,81 @@
+version: 2.1
+
+defaults: &defaults
+  docker:
+    - image: cimg/python:3.13.2-browsers
+
+install_dependencies: &install_dependencies
+  name: Install build and deployment dependencies
+  command: |
+    sudo apt-get update
+    sudo apt-get install -y jq python3-pip
+    sudo pip3 install awscli --upgrade
+
+install_deploy_suite: &install_deploy_suite
+  name: Install the Topcoder deployment suite
+  command: |
+    git clone --branch v1.4.20 https://github.com/topcoder-platform/tc-deploy-scripts ../buildscript
+    test "$(git -C ../buildscript rev-parse HEAD)" = "5f3745c35463ce0e2475c12269aa7a2b446456e5"
+    cp ../buildscript/awsconfiguration.sh .
+    python3 deployment/harden-awsconfiguration.py awsconfiguration.sh
+    bash -n awsconfiguration.sh
+
+build_and_deploy_steps: &build_and_deploy_steps
+  - checkout
+  - setup_remote_docker
+  - run: *install_dependencies
+  - run: *install_deploy_suite
+  - run:
+      name: Build the application and ClamAV images
+      command: |
+        docker buildx build --load --no-cache=true \
+          --platform linux/amd64 \
+          -t "${APPNAME}:latest" .
+        docker buildx build --load --no-cache=true \
+          --platform linux/amd64 \
+          --build-arg CLAMAV_TCP_ADDR=127.0.0.1 \
+          -t "${APPNAME}-clamav:latest" ./clamav
+  - run:
+      name: Deploy to the existing Fargate service
+      no_output_timeout: 30m
+      command: |
+        ./awsconfiguration.sh "$DEPLOY_ENV" "$DEPLOY_REGION"
+        source awsenvconf
+        bash deployment/deploy-existing-service.sh
+
+jobs:
+  build-dev:
+    <<: *defaults
+    environment:
+      APPNAME: av-scanner-v6
+      DEPLOY_ENV: DEV
+      DEPLOY_REGION: us-east-1
+      DEPLOYMENT_ENVIRONMENT: dev
+    steps: *build_and_deploy_steps
+
+  build-prod:
+    <<: *defaults
+    environment:
+      APPNAME: av-scanner-v6
+      DEPLOY_ENV: PROD
+      DEPLOY_REGION: us-east-1
+      DEPLOYMENT_ENVIRONMENT: prod
+    steps: *build_and_deploy_steps
+
+workflows:
+  build-and-deploy:
+    jobs:
+      - build-dev:
+          context: org-global
+          serial-group: << pipeline.project.slug >>/deploy-dev
+          filters:
+            branches:
+              only:
+                - develop
+      - build-prod:
+          context: org-global
+          serial-group: << pipeline.project.slug >>/deploy-prod
+          filters:
+            branches:
+              only:
+                - master

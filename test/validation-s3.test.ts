@@ -215,6 +215,27 @@ void test("supports legacy CA-only Kafka TLS and verification defaults", () => {
   assert.equal(config.kafka.tls?.rejectUnauthorized, false);
 });
 
+void test("validates configurable S3 missing-source retry settings", () => {
+  const defaults = loadConfig({});
+  const configured = loadConfig({
+    S3_NOT_FOUND_MAX_ATTEMPTS: "7",
+    S3_NOT_FOUND_RETRY_BASE_DELAY_MS: "250",
+  });
+
+  assert.equal(defaults.scan.s3NotFoundMaxAttempts, 5);
+  assert.equal(defaults.scan.s3NotFoundRetryBaseDelayMs, 1_000);
+  assert.equal(configured.scan.s3NotFoundMaxAttempts, 7);
+  assert.equal(configured.scan.s3NotFoundRetryBaseDelayMs, 250);
+  assert.throws(
+    () => loadConfig({ S3_NOT_FOUND_MAX_ATTEMPTS: "0" }),
+    /S3_NOT_FOUND_MAX_ATTEMPTS must be a positive integer/,
+  );
+  assert.throws(
+    () => loadConfig({ S3_NOT_FOUND_RETRY_BASE_DELAY_MS: "-1" }),
+    /S3_NOT_FOUND_RETRY_BASE_DELAY_MS must be a positive integer/,
+  );
+});
+
 void test("enforces destination requirements and configured bucket whitelists", () => {
   const missingDestinations = createScanEvent({ moveFile: true });
   assertInvalidEvent(

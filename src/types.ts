@@ -176,7 +176,7 @@ export interface ProcessedScan {
 /** Result side effects performed after an antivirus verdict is available. */
 export interface ResultHandler {
   /**
-   * Copies, alerts, and delivers the final scan result.
+   * Copies and delivers the final scan result.
    *
    * @param payload - Final payload including scan status and infection flag.
    * @param source - Original S3 object location.

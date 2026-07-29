@@ -53,15 +53,11 @@ export interface AppConfig {
     topic: string;
   };
   logLevel: string;
-  opsgenie: {
-    apiKey?: string;
-    apiUrl: string;
-    enabled: boolean;
-    source: string;
-  };
   scan: {
     concurrency: number;
     maxFileSizeBytes: number;
+    s3NotFoundMaxAttempts: number;
+    s3NotFoundRetryBaseDelayMs: number;
   };
   webhooks: {
     timeoutMs: number;
@@ -318,11 +314,6 @@ export function loadConfig(
 
   const authUrl = environment.AUTH0_URL;
   const tls = kafkaTls(environment, schemeRequestsTls);
-  const opsgenieEnabled = booleanValue(
-    environment.OPSGENIE_ENABLED ?? environment.OPGENIE_ENABLED,
-    false,
-    "OPSGENIE_ENABLED",
-  );
 
   return {
     auth: {
@@ -401,15 +392,6 @@ export function loadConfig(
       ...(tls ? { tls } : {}),
     },
     logLevel: environment.LOG_LEVEL ?? "info",
-    opsgenie: {
-      apiUrl:
-        environment.OPSGENIE_API_URL ?? "https://api.opsgenie.com/v2/alerts",
-      enabled: opsgenieEnabled,
-      source: environment.OPSGENIE_SOURCE ?? "DevOps",
-      ...(environment.OPSGENIE_API_KEY
-        ? { apiKey: environment.OPSGENIE_API_KEY }
-        : {}),
-    },
     scan: {
       concurrency: positiveInteger(
         environment.SCAN_CONCURRENCY,
@@ -420,6 +402,16 @@ export function loadConfig(
         environment.MAX_SCAN_FILE_SIZE_BYTES,
         500 * 1024 * 1024,
         "MAX_SCAN_FILE_SIZE_BYTES",
+      ),
+      s3NotFoundMaxAttempts: positiveInteger(
+        environment.S3_NOT_FOUND_MAX_ATTEMPTS,
+        5,
+        "S3_NOT_FOUND_MAX_ATTEMPTS",
+      ),
+      s3NotFoundRetryBaseDelayMs: positiveInteger(
+        environment.S3_NOT_FOUND_RETRY_BASE_DELAY_MS,
+        1_000,
+        "S3_NOT_FOUND_RETRY_BASE_DELAY_MS",
       ),
     },
     webhooks: {

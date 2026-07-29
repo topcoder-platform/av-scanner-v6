@@ -18,6 +18,14 @@
       {
         "name": "CLAMAV_PORT",
         "value": "3310"
+      },
+      {
+        "name": "S3_NOT_FOUND_MAX_ATTEMPTS",
+        "value": "5"
+      },
+      {
+        "name": "S3_NOT_FOUND_RETRY_BASE_DELAY_MS",
+        "value": "1000"
       }
     ],
     "dependsOn": [

@@ -3,11 +3,32 @@ import {
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  NoSuchKey,
+  NotFound,
   S3Client,
 } from "@aws-sdk/client-s3";
 import { Readable } from "node:stream";
 
+import { S3ObjectNotFoundError } from "./errors.js";
 import type { ObjectMetadata, ObjectStore, S3Location } from "./types.js";
+
+/**
+ * Identifies only modeled missing-object responses from S3 read operations.
+ * AccessDenied, modeled NoSuchBucket, transient service errors, and ordinary
+ * errors remain operational failures. HeadObject can report a missing bucket
+ * as generic NotFound, which S3 does not distinguish from a missing key.
+ *
+ * @param error - Arbitrary AWS SDK rejection.
+ * @returns True only for modeled NotFound/NoSuchKey responses with HTTP 404.
+ */
+export function isS3ObjectNotFound(
+  error: unknown,
+): error is NoSuchKey | NotFound {
+  return (
+    (error instanceof NotFound || error instanceof NoSuchKey) &&
+    error.$metadata.httpStatusCode === 404
+  );
+}
 
 /**
  * Decodes an S3 URL path and converts malformed escapes into a safe error.
@@ -166,9 +187,19 @@ export class S3ObjectStore implements ObjectStore {
    * @throws When S3 fails or omits ContentLength.
    */
   async getMetadata(location: S3Location): Promise<ObjectMetadata> {
-    const output = await this.client.send(
-      new HeadObjectCommand({ Bucket: location.bucket, Key: location.key }),
-    );
+    let output;
+    try {
+      output = await this.client.send(
+        new HeadObjectCommand({ Bucket: location.bucket, Key: location.key }),
+      );
+    } catch (error) {
+      if (isS3ObjectNotFound(error)) {
+        throw new S3ObjectNotFoundError("HeadObject", location, {
+          cause: error,
+        });
+      }
+      throw error;
+    }
     if (output.ContentLength === undefined) {
       throw new Error(
         `S3 object ${location.bucket}/${location.key} did not return ContentLength`,
@@ -186,9 +217,19 @@ export class S3ObjectStore implements ObjectStore {
    * @throws When the SDK response does not contain a Node readable stream.
    */
   async openReadStream(location: S3Location): Promise<Readable> {
-    const output = await this.client.send(
-      new GetObjectCommand({ Bucket: location.bucket, Key: location.key }),
-    );
+    let output;
+    try {
+      output = await this.client.send(
+        new GetObjectCommand({ Bucket: location.bucket, Key: location.key }),
+      );
+    } catch (error) {
+      if (isS3ObjectNotFound(error)) {
+        throw new S3ObjectNotFoundError("GetObject", location, {
+          cause: error,
+        });
+      }
+      throw error;
+    }
     if (!(output.Body instanceof Readable)) {
       throw new Error(
         `S3 object ${location.bucket}/${location.key} did not include a readable body`,

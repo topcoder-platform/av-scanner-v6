@@ -4,6 +4,11 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  "@platformatic/kafka@1.34.0":
+    hash: a293d129a0e65a8670168ba3760a13ba2f28f9c7aed5335952c72e1d19b3ef84
+    path: patches/@platformatic__kafka@1.34.0.patch
+
 importers:
   .:
     dependencies:
@@ -11,8 +16,8 @@ importers:
         specifier: ^3.864.0
         version: 3.1090.0
       "@platformatic/kafka":
-        specifier: ^1.34.0
-        version: 1.34.0
+        specifier: 1.34.0
+        version: 1.34.0(patch_hash=a293d129a0e65a8670168ba3760a13ba2f28f9c7aed5335952c72e1d19b3ef84)
       axios:
         specifier: ^1.12.0
         version: 1.18.1
@@ -2315,7 +2320,7 @@ snapshots:
 
   "@platformatic/dynamic-buffer@0.3.1": {}
 
-  "@platformatic/kafka@1.34.0":
+  "@platformatic/kafka@1.34.0(patch_hash=a293d129a0e65a8670168ba3760a13ba2f28f9c7aed5335952c72e1d19b3ef84)":
     dependencies:
       "@platformatic/dynamic-buffer": 0.3.1
       "@platformatic/wasm-utils": 0.2.1

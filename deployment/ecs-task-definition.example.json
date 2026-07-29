@@ -78,6 +78,14 @@
           "value": "1"
         },
         {
+          "name": "S3_NOT_FOUND_MAX_ATTEMPTS",
+          "value": "5"
+        },
+        {
+          "name": "S3_NOT_FOUND_RETRY_BASE_DELAY_MS",
+          "value": "1000"
+        },
+        {
           "name": "WHITELISTED_CLEAN_BUCKETS",
           "value": "CLEAN_BUCKET_1,CLEAN_BUCKET_2"
         },
@@ -100,18 +108,6 @@
         {
           "name": "AUTH0_AUDIENCE",
           "value": "https://api.example.com/"
-        },
-        {
-          "name": "OPSGENIE_ENABLED",
-          "value": "true"
-        },
-        {
-          "name": "OPSGENIE_API_URL",
-          "value": "https://api.opsgenie.com/v2/alerts"
-        },
-        {
-          "name": "OPSGENIE_SOURCE",
-          "value": "Production"
         }
       ],
       "secrets": [
@@ -134,10 +130,6 @@
         {
           "name": "KAFKA_CA_CERT",
           "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT:secret:av-scanner-v6/kafka-ca-cert"
-        },
-        {
-          "name": "OPSGENIE_API_KEY",
-          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT:secret:av-scanner-v6/opsgenie-api-key"
         }
       ],
       "dependsOn": [

@@ -1,0 +1,94 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Import the retained AV Scanner v6 deployment parameters into the dedicated
+  service stack before its infrastructure is created.
+
+Parameters:
+  DeployParameterPrefix:
+    Type: String
+    AllowedPattern: "/.+"
+  LegacyStackName:
+    Type: String
+  ECSClusterName:
+    Type: String
+  LegacyECSServiceName:
+    Type: String
+  LegacyTaskFamily:
+    Type: String
+  AppRepositoryName:
+    Type: String
+  ClamAvRepositoryName:
+    Type: String
+
+Resources:
+  DeployCloudFormationStackParameter:
+    Type: AWS::SSM::Parameter
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub ${DeployParameterPrefix}/AWS_CLOUDFORMATION_STACK_NAME
+      Type: String
+      Value: !Ref LegacyStackName
+
+  DeployClusterParameter:
+    Type: AWS::SSM::Parameter
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub ${DeployParameterPrefix}/AWS_ECS_CLUSTER
+      Type: String
+      Value: !Ref ECSClusterName
+
+  DeployServiceParameter:
+    Type: AWS::SSM::Parameter
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub ${DeployParameterPrefix}/AWS_ECS_SERVICE
+      Type: String
+      Value: !Ref LegacyECSServiceName
+
+  DeployTaskFamilyParameter:
+    Type: AWS::SSM::Parameter
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub ${DeployParameterPrefix}/AWS_ECS_TASK_FAMILY
+      Type: String
+      Value: !Ref LegacyTaskFamily
+
+  DeployAppContainerParameter:
+    Type: AWS::SSM::Parameter
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub ${DeployParameterPrefix}/AWS_ECS_APP_CONTAINER_NAME
+      Type: String
+      Value: app
+
+  DeployClamAvContainerParameter:
+    Type: AWS::SSM::Parameter
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub ${DeployParameterPrefix}/AWS_ECS_CLAMAV_CONTAINER_NAME
+      Type: String
+      Value: filescanner
+
+  DeployAppRepositoryParameter:
+    Type: AWS::SSM::Parameter
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub ${DeployParameterPrefix}/AWS_REPOSITORY
+      Type: String
+      Value: !Ref AppRepositoryName
+
+  DeployClamAvRepositoryParameter:
+    Type: AWS::SSM::Parameter
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub ${DeployParameterPrefix}/AWS_REPOSITORY_CLAMAV
+      Type: String
+      Value: !Ref ClamAvRepositoryName
