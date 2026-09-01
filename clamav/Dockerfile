@@ -1,4 +1,6 @@
-FROM clamav/clamav:1.5.3@sha256:7f5389ccaa2368c383fa80e167ccfe44348d71e685f926fce4755eed1757673a
+FROM clamav/clamav:stable@sha256:f0954d679017eb6d48221e2b2be3ac5457bf278a844f39b672376f55a085f591
+
+RUN apk upgrade --no-cache
 
 COPY clamd.conf /etc/clamav/clamd.conf
 
