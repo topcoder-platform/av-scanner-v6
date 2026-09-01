@@ -4,7 +4,7 @@ services:
       context: ./clamav
       args:
         CLAMAV_TCP_ADDR: 0.0.0.0
-    image: av-scanner-v6-clamav:1.5.3
+    image: av-scanner-v6-clamav:1.5.4
     restart: unless-stopped
     healthcheck:
       test:

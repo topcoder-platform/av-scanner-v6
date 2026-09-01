@@ -183,7 +183,7 @@ function parseScanResponse(response: string): boolean {
   throw new ClamAvError(`Unexpected ClamAV scan response: ${normalized}`);
 }
 
-/** Pure TCP implementation of clamd PING and INSTREAM for Node 22. */
+/** Pure TCP implementation of clamd PING and INSTREAM for Node 26. */
 export class ClamAvClient implements AntivirusScanner {
   /**
    * Creates a ClamAV client with independent health and scan deadlines.
