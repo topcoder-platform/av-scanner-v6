@@ -29,9 +29,11 @@ build_and_deploy_steps: &build_and_deploy_steps
       name: Build the application and ClamAV images
       command: |
         docker buildx build --load --no-cache=true \
+          --provenance=false \
           --platform linux/amd64 \
           -t "${APPNAME}:latest" .
         docker buildx build --load --no-cache=true \
+          --provenance=false \
           --platform linux/amd64 \
           --build-arg CLAMAV_TCP_ADDR=127.0.0.1 \
           -t "${APPNAME}-clamav:latest" ./clamav

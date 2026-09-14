@@ -1,6 +1,6 @@
 # AV Scanner v6
 
-`av-scanner-v6` is the Node 22/TypeScript replacement for
+`av-scanner-v6` is the Node 26/TypeScript replacement for
 `submission-scanner-processor`. It consumes the existing `avscan.action.scan`
 contract with `@platformatic/kafka`, streams S3 objects through a ClamAV
 sidecar, optionally moves them to clean or quarantine storage, and delivers the
@@ -14,8 +14,13 @@ cause ECS task churn.
 
 ## Runtime and processing flow
 
-- Node.js `22.23.1`, pinned by `.nvmrc` and the container image manifest digest.
-- ClamAV `1.5.3`, pinned by the sidecar image manifest digest.
+- Node.js `26.5.1`, pinned by `.nvmrc` and installed from Alpine 3.24 in the
+  final application image.
+- ClamAV `1.5.4`, pinned through the official stable sidecar image digest.
+- The final application image contains Alpine's system Node and production
+  dependencies only. It runs as UID/GID `10001`, has no package manager, and
+  receives current Alpine security package updates when it is built. The
+  ClamAV sidecar also upgrades its Alpine packages before deployment.
 - TypeScript with ESM output.
 - `@platformatic/kafka` 2.8.0, pinned exactly for broker failover and consumer
   group recovery fixes, with `autocommit: false`, committed offsets, and the
