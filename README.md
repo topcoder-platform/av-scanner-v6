@@ -130,9 +130,13 @@ Supported callback modes are:
 When `moveFile` is true, both destination buckets are required. The source is
 copied to the selected bucket under `fileName`, the callback succeeds, and the
 Kafka offset commits before the original source is deleted. This ordering keeps
-the source available if callback delivery or commit must retry. Whitelists
-restrict values when configured; an empty list retains legacy unrestricted
-behavior.
+the source available if callback delivery or commit must retry. If the source
+bucket and decoded key already match the selected destination bucket and
+`fileName`, copying and source deletion are skipped. Scanning, callback delivery,
+and offset commit still run, and the callback uses the canonical destination URL.
+Different keys within the same bucket still follow the normal move flow.
+Whitelists restrict values when configured; an empty list retains legacy
+unrestricted behavior.
 
 ## Results and failure behavior
 

@@ -46,7 +46,7 @@ export function callbackPayload(payload: ScanPayload): ScanResultPayload {
   return output as ScanResultPayload;
 }
 
-/** Handles post-scan file copying and callback delivery. */
+/** Handles post-scan copying between distinct S3 objects and callback delivery. */
 export class ScanResultHandler implements ResultHandler {
   /**
    * Creates the result handler used by ScanProcessor.
@@ -64,7 +64,9 @@ export class ScanResultHandler implements ResultHandler {
   ) {}
 
   /**
-   * Copies any moved result and delivers its callback. Source deletion is
+   * Copies any moved result and delivers its callback. When the source bucket
+   * and key already match the selected destination, skips copying and deletion
+   * while still delivering the callback. Source deletion for an actual move is
    * returned separately for the post-commit step.
    *
    * @param payload - Terminal scan payload.
@@ -77,6 +79,7 @@ export class ScanResultHandler implements ResultHandler {
     source: S3Location,
   ): Promise<ProcessedScan> {
     const result = { ...payload };
+    let deleteSourceAfterCommit = false;
 
     if (result.moveFile) {
       const destinationBucket = result.isInfected
@@ -86,7 +89,13 @@ export class ScanResultHandler implements ResultHandler {
         throw new Error("Scan result is missing its destination bucket");
       }
 
-      await this.objectStore.copy(source, destinationBucket, result.fileName);
+      if (
+        source.bucket !== destinationBucket ||
+        source.key !== result.fileName
+      ) {
+        await this.objectStore.copy(source, destinationBucket, result.fileName);
+        deleteSourceAfterCommit = true;
+      }
       result.url = buildS3Url(destinationBucket, result.fileName);
     }
 
@@ -99,7 +108,7 @@ export class ScanResultHandler implements ResultHandler {
 
     return {
       payload: externalPayload,
-      ...(result.moveFile
+      ...(deleteSourceAfterCommit
         ? {
             afterCommit: async () => {
               await this.objectStore.delete(source);
