@@ -53,7 +53,7 @@ export class ScanResultHandler implements ResultHandler {
    *
    * @param config - Bus API and service identity settings.
    * @param objectStore - S3 copy/delete implementation.
-   * @param tokenProvider - Auth0 token source used for Bus API events.
+   * @param tokenProvider - Shared Keycloak token source used for Bus API events.
    * @param http - Axios client used for webhooks and the Bus API.
    */
   constructor(

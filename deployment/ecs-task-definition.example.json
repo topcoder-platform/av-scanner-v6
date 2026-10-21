@@ -1,7 +1,9 @@
 {
   "family": "av-scanner-v6",
   "networkMode": "awsvpc",
-  "requiresCompatibilities": ["FARGATE"],
+  "requiresCompatibilities": [
+    "FARGATE"
+  ],
   "cpu": "1024",
   "memory": "4096",
   "executionRoleArn": "arn:aws:iam::ACCOUNT:role/ECS_EXECUTION_ROLE",
@@ -102,22 +104,30 @@
           "value": "https://api.example.com/v5/bus/events"
         },
         {
-          "name": "AUTH0_URL",
-          "value": "https://AUTH0_DOMAIN/oauth/token"
+          "name": "KEYCLOAK_TOKEN_URL",
+          "value": "https://KEYCLOAK_HOST/m2m/token"
         },
         {
-          "name": "AUTH0_AUDIENCE",
+          "name": "KEYCLOAK_AUDIENCE",
           "value": "https://api.example.com/"
+        },
+        {
+          "name": "M2M_PROVIDER",
+          "value": "keycloak"
+        },
+        {
+          "name": "KEYCLOAK_ISSUER",
+          "value": "https://KEYCLOAK_HOST/realms/M2M_REALM"
         }
       ],
       "secrets": [
         {
-          "name": "AUTH0_CLIENT_ID",
-          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT:secret:av-scanner-v6/auth0-client-id"
+          "name": "KEYCLOAK_CLIENT_ID",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT:secret:av-scanner-v6/keycloak-client-id"
         },
         {
-          "name": "AUTH0_CLIENT_SECRET",
-          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT:secret:av-scanner-v6/auth0-client-secret"
+          "name": "KEYCLOAK_CLIENT_SECRET",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT:secret:av-scanner-v6/keycloak-client-secret"
         },
         {
           "name": "KAFKA_CLIENT_CERT",

@@ -268,10 +268,10 @@ Resources:
                 Value: !Ref KafkaRejectUnauthorized
               - !Ref AWS::NoValue
           Secrets:
-            - Name: AUTH0_CLIENT_ID
-              ValueFrom: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${RuntimeParameterPrefix}/AUTH0_CLIENT_ID
-            - Name: AUTH0_CLIENT_SECRET
-              ValueFrom: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${RuntimeParameterPrefix}/AUTH0_CLIENT_SECRET
+            - Name: KEYCLOAK_CLIENT_ID
+              ValueFrom: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${RuntimeParameterPrefix}/KEYCLOAK_CLIENT_ID
+            - Name: KEYCLOAK_CLIENT_SECRET
+              ValueFrom: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${RuntimeParameterPrefix}/KEYCLOAK_CLIENT_SECRET
             - Name: AVSCAN_TOPIC
               ValueFrom: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${RuntimeParameterPrefix}/AVSCAN_TOPIC
             - Name: BUSAPI_EVENTS_URL
@@ -284,12 +284,14 @@ Resources:
               ValueFrom: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${RuntimeParameterPrefix}/WHITELISTED_QUARANTINE_BUCKETS
             - Name: WHITELISTED_KAFKA_TOPICS
               ValueFrom: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${RuntimeParameterPrefix}/WHITELISTED_KAFKA_TOPICS
-            - Name: AUTH0_URL
-              ValueFrom: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${CommonParameterPrefix}/AUTH0_URL
-            - Name: AUTH0_AUDIENCE
-              ValueFrom: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${CommonParameterPrefix}/AUTH0_AUDIENCE
-            - Name: AUTH0_PROXY_SERVER_URL
-              ValueFrom: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${CommonParameterPrefix}/AUTH0_PROXY_SERVER_URL
+            - Name: M2M_PROVIDER
+              ValueFrom: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${RuntimeParameterPrefix}/M2M_PROVIDER
+            - Name: KEYCLOAK_ISSUER
+              ValueFrom: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${RuntimeParameterPrefix}/KEYCLOAK_ISSUER
+            - Name: KEYCLOAK_TOKEN_URL
+              ValueFrom: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${RuntimeParameterPrefix}/KEYCLOAK_TOKEN_URL
+            - Name: KEYCLOAK_AUDIENCE
+              ValueFrom: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${RuntimeParameterPrefix}/KEYCLOAK_AUDIENCE
             - Name: KAFKA_URL
               ValueFrom: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${CommonParameterPrefix}/KAFKA_URL
             - Name: KAFKA_MAX_BYTES

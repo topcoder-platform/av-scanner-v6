@@ -1,3 +1,4 @@
+import type { AuthOptions } from "tc-core-library-js";
 import { existsSync, readFileSync } from "node:fs";
 
 /** Optional server-authenticated or mutual-TLS settings for Kafka. */
@@ -16,14 +17,7 @@ interface ParsedKafkaBroker {
 
 /** Validated application configuration derived from environment variables. */
 export interface AppConfig {
-  auth: {
-    audience?: string;
-    clientId?: string;
-    clientSecret?: string;
-    proxyUrl?: string;
-    tokenCacheSeconds: number;
-    url?: string;
-  };
+  auth: AuthOptions;
   aws: {
     region: string;
   };
@@ -312,29 +306,17 @@ export function loadConfig(
   const brokers = parsedBrokers.map(({ address }) => address);
   const schemeRequestsTls = explicitTransports.has("tls");
 
-  const authUrl = environment.AUTH0_URL;
   const tls = kafkaTls(environment, schemeRequestsTls);
 
   return {
     auth: {
-      tokenCacheSeconds: nonNegativeInteger(
-        environment.TOKEN_CACHE_TIME,
-        300,
-        "TOKEN_CACHE_TIME",
-      ),
-      ...(authUrl ? { url: authUrl } : {}),
-      ...(environment.AUTH0_AUDIENCE
-        ? { audience: environment.AUTH0_AUDIENCE }
-        : {}),
-      ...(environment.AUTH0_CLIENT_ID
-        ? { clientId: environment.AUTH0_CLIENT_ID }
-        : {}),
-      ...(environment.AUTH0_CLIENT_SECRET
-        ? { clientSecret: environment.AUTH0_CLIENT_SECRET }
-        : {}),
-      ...(environment.AUTH0_PROXY_SERVER_URL
-        ? { proxyUrl: environment.AUTH0_PROXY_SERVER_URL }
-        : {}),
+      M2M_PROVIDER: environment.M2M_PROVIDER,
+      KEYCLOAK_ISSUER: environment.KEYCLOAK_ISSUER,
+      KEYCLOAK_AUDIENCE: environment.KEYCLOAK_AUDIENCE,
+      KEYCLOAK_TOKEN_URL: environment.KEYCLOAK_TOKEN_URL,
+      KEYCLOAK_CLIENT_ID: environment.KEYCLOAK_CLIENT_ID,
+      KEYCLOAK_CLIENT_SECRET: environment.KEYCLOAK_CLIENT_SECRET,
+      KEYCLOAK_SCOPE: environment.KEYCLOAK_SCOPE,
     },
     aws: {
       region: environment.AWS_REGION ?? "us-east-1",

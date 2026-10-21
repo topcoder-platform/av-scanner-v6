@@ -70,7 +70,7 @@ pnpm start
 ```
 
 For local ClamAV plus the app, copy `.env.example` to `.env`, supply Kafka and
-AWS/Auth0 values, then run:
+AWS/Keycloak values, then run:
 
 ```bash
 docker compose up --build
@@ -121,7 +121,7 @@ lowercase.
 Supported callback modes are:
 
 - `kafka`: post a complete result envelope to `BUSAPI_EVENTS_URL`, authenticated
-  with an Auth0 client-credentials token. Bus API publishes it to
+  with a verified Keycloak client-credentials token. Bus API publishes it to
   `callbackKafkaTopic`.
 - `webhook`: send the result payload directly with `get` or `post` and
   `no-auth`, `bearer`, `basic`, or `api-key` authentication.
@@ -310,12 +310,10 @@ latch, alarm separately on Kafka consumer errors or lag.
 | `WHITELISTED_QUARANTINE_BUCKETS`              | empty                    | Comma-separated quarantine buckets                         |
 | `WHITELISTED_KAFKA_TOPICS`                    | empty                    | Comma-separated callback topics                            |
 | `BUSAPI_EVENTS_URL`                           | Topcoder dev events URL  | Complete Bus API events endpoint                           |
-| `AUTH0_URL`                                   | unset                    | Complete Auth0 token endpoint                              |
-| `AUTH0_AUDIENCE`                              | unset                    | Bus API token audience                                     |
-| `AUTH0_CLIENT_ID` / `AUTH0_CLIENT_SECRET`     | unset                    | Client credentials for kafka callbacks                     |
-| `AUTH0_PROXY_SERVER_URL`                      | unset                    | Optional Topcoder token proxy endpoint                     |
-| `TOKEN_CACHE_TIME`                            | `300`                    | Maximum token cache lifetime in seconds                    |
-| `WEBHOOK_TIMEOUT_MS`                          | `15000`                  | HTTP callback/Auth0 timeout                                |
+| `KEYCLOAK_TOKEN_URL`                                   | unset                    | Managed Keycloak token endpoint                              |
+| `KEYCLOAK_AUDIENCE`                              | unset                    | Bus API token audience                                     |
+| `KEYCLOAK_CLIENT_ID` / `KEYCLOAK_CLIENT_SECRET`     | unset                    | Client credentials for kafka callbacks                     |
+| `WEBHOOK_TIMEOUT_MS`                          | `15000`                  | HTTP callback timeout                                |
 
 `kafka+ssl://` enables TLS and defaults to peer verification with Node's system
 trust store. Bare brokers alongside it inherit the same TLS transport because
@@ -330,3 +328,12 @@ without a client certificate.
 
 AWS credentials use the standard AWS SDK provider chain and are not scanner
 configuration.
+
+## Keycloak migration branch
+
+See [Keycloak configuration and rollout](docs/keycloak-m2m.md). Set
+`M2M_PROVIDER=keycloak` and `KEYCLOAK_ISSUER` alongside the audience, endpoint and
+client credentials above. Optional `KEYCLOAK_SCOPE` narrows approved defaults.
+The shared core verifies returned JWTs and owns expiry-aware caching, request
+coalescing and a fixed ten-second token timeout. There is no proxy or Auth0 fallback.
+Webhook callback authentication is unchanged and does not request an M2M token.

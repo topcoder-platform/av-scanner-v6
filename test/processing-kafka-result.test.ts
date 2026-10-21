@@ -9,7 +9,7 @@ import axios, {
 } from "axios";
 import { createLogger } from "winston";
 
-import { jwtCacheLifetimeSeconds, M2MTokenProvider } from "../src/auth.js";
+import { M2MTokenProvider } from "../src/auth.js";
 import { loadConfig, type AppConfig } from "../src/config.js";
 import { ClamAvError, ClamAvSizeLimitError } from "../src/errors.js";
 import {
@@ -117,21 +117,7 @@ function processedResult(
   };
 }
 
-/**
- * Creates an unsigned JWT-shaped token for cache-expiry tests.
- *
- * @param expiresAtSeconds - Numeric exp claim in Unix seconds.
- * @returns Three-segment token readable by the non-authorizing cache parser.
- */
-function testJwt(expiresAtSeconds: number): string {
-  const header = Buffer.from(JSON.stringify({ alg: "none" })).toString(
-    "base64url",
-  );
-  const payload = Buffer.from(
-    JSON.stringify({ exp: expiresAtSeconds }),
-  ).toString("base64url");
-  return `${header}.${payload}.signature`;
-}
+
 
 /**
  * Builds an in-memory S3 adapter and its observable call state.
@@ -342,10 +328,7 @@ function recordingAdapter(
     }
     return Promise.resolve({
       config: request,
-      data:
-        request.url === "https://auth.example/token"
-          ? { access_token: "m2m-token", expires_in: 3600 }
-          : { ok: true },
+      data: { ok: true },
       headers: new AxiosHeaders(),
       status: 200,
       statusText: "OK",
@@ -353,51 +336,19 @@ function recordingAdapter(
   };
 }
 
-void test("M2MTokenProvider does not cache an expired JWT without expires_in", async () => {
+void test("ScanResultHandler stages a clean copy and posts the complete Bus envelope", async (t) => {
   const config = testConfig({
-    AUTH0_AUDIENCE: "https://bus.example",
-    AUTH0_CLIENT_ID: "client-id",
-    AUTH0_CLIENT_SECRET: "client-secret",
-    AUTH0_URL: "https://auth.example/token",
-  });
-  const expiredToken = testJwt(Math.floor(Date.now() / 1000) - 1);
-  const requests: RecordedRequest[] = [];
-  const adapter: AxiosAdapter = (request: InternalAxiosRequestConfig) => {
-    requests.push({
-      data: request.data,
-      headers: request.headers.toJSON(),
-      method: request.method,
-      url: request.url,
-    });
-    return Promise.resolve({
-      config: request,
-      data: { access_token: expiredToken },
-      headers: new AxiosHeaders(),
-      status: 200,
-      statusText: "OK",
-    });
-  };
-  const tokens = new M2MTokenProvider(config.auth, axios.create({ adapter }));
-
-  assert.equal(jwtCacheLifetimeSeconds(expiredToken), 0);
-  await tokens.getToken();
-  await tokens.getToken();
-
-  assert.equal(requests.length, 2);
-});
-
-void test("ScanResultHandler stages a clean copy and posts the complete Bus envelope", async () => {
-  const config = testConfig({
-    AUTH0_AUDIENCE: "https://bus.example",
-    AUTH0_CLIENT_ID: "client-id",
-    AUTH0_CLIENT_SECRET: "client-secret",
-    AUTH0_URL: "https://auth.example/token",
+    KEYCLOAK_AUDIENCE: "https://bus.example",
+    KEYCLOAK_CLIENT_ID: "client-id",
+    KEYCLOAK_CLIENT_SECRET: "client-secret",
+    KEYCLOAK_TOKEN_URL: "https://auth.example/token",
     BUSAPI_EVENTS_URL: "https://bus.example/events",
   });
   const requests: RecordedRequest[] = [];
   const http = axios.create({ adapter: recordingAdapter(requests) });
   const { store, copies, deletes } = objectStoreFixture(4);
-  const tokens = new M2MTokenProvider(config.auth, http);
+  const tokens = new M2MTokenProvider(config.auth);
+  t.mock.method(tokens, "getToken", () => Promise.resolve("m2m-token"));
   const handler = new ScanResultHandler(config, store, tokens, http);
   const payload: ScanPayload = {
     callbackKafkaTopic: "submission.scan.complete",
@@ -429,10 +380,10 @@ void test("ScanResultHandler stages a clean copy and posts the complete Bus enve
   );
   assert.equal("moveFile" in result, false);
   assert.equal("callbackOption" in result, false);
-  assert.equal(requests.length, 2);
-  assert.equal(requests[1]?.url, "https://bus.example/events");
-  assert.equal(requests[1]?.headers.Authorization, "Bearer m2m-token");
-  const envelope = requests[1]?.data as Record<string, unknown>;
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0]?.url, "https://bus.example/events");
+  assert.equal(requests[0]?.headers.Authorization, "Bearer m2m-token");
+  const envelope = requests[0]?.data as Record<string, unknown>;
   assert.equal(envelope.topic, "submission.scan.complete");
   assert.equal(envelope.originator, "file-scanner-processor");
   assert.deepEqual(envelope.payload, result);
@@ -443,12 +394,12 @@ void test("ScanResultHandler stages a clean copy and posts the complete Bus enve
   ]);
 });
 
-void test("ScanResultHandler retains the source when callback delivery fails", async () => {
+void test("ScanResultHandler retains the source when callback delivery fails", async (t) => {
   const config = testConfig({
-    AUTH0_AUDIENCE: "https://bus.example",
-    AUTH0_CLIENT_ID: "client-id",
-    AUTH0_CLIENT_SECRET: "client-secret",
-    AUTH0_URL: "https://auth.example/token",
+    KEYCLOAK_AUDIENCE: "https://bus.example",
+    KEYCLOAK_CLIENT_ID: "client-id",
+    KEYCLOAK_CLIENT_SECRET: "client-secret",
+    KEYCLOAK_TOKEN_URL: "https://auth.example/token",
     BUSAPI_EVENTS_URL: "https://bus.example/events",
   });
   const requests: RecordedRequest[] = [];
@@ -459,10 +410,12 @@ void test("ScanResultHandler retains the source when callback delivery fails", a
     ),
   });
   const { store, copies, deletes } = objectStoreFixture(4);
+  const tokens = new M2MTokenProvider(config.auth);
+  t.mock.method(tokens, "getToken", () => Promise.resolve("m2m-token"));
   const handler = new ScanResultHandler(
     config,
     store,
-    new M2MTokenProvider(config.auth, http),
+    tokens,
     http,
   );
 
@@ -493,7 +446,7 @@ void test("ScanResultHandler preserves webhook API-key authentication and payloa
   const requests: RecordedRequest[] = [];
   const http = axios.create({ adapter: recordingAdapter(requests) });
   const { store } = objectStoreFixture(4);
-  const tokens = new M2MTokenProvider(config.auth, http);
+  const tokens = new M2MTokenProvider(config.auth);
   const handler = new ScanResultHandler(config, store, tokens, http);
 
   const processed = await handler.handle(

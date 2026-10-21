@@ -101,7 +101,7 @@ export async function runApplication(): Promise<void> {
   const http = axios.create({ timeout: config.webhooks.timeoutMs });
   const objectStore = S3ObjectStore.forRegion(config.aws.region);
   const scanner = new ClamAvClient(config.clamAv);
-  const tokenProvider = new M2MTokenProvider(config.auth, http);
+  const tokenProvider = new M2MTokenProvider(config.auth);
   const resultHandler = new ScanResultHandler(
     config,
     objectStore,

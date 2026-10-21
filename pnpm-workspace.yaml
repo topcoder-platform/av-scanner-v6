@@ -12,4 +12,5 @@ patchedDependencies:
   "@platformatic/kafka@2.8.0": patches/@platformatic__kafka@2.8.0.patch
 
 allowBuilds:
+  dtrace-provider: false
   esbuild: true

@@ -304,7 +304,7 @@ void test("exhausted missing source emits fail-closed result without movement", 
   const results = new ScanResultHandler(
     config,
     store,
-    new M2MTokenProvider(config.auth, http),
+    new M2MTokenProvider(config.auth),
     http,
   );
   const processor = new ScanProcessor(
