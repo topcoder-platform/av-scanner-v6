@@ -1,3 +1,4 @@
+import { createBusApiClient } from "tc-core-library-js";
 import type { AxiosInstance, AxiosRequestConfig } from "axios";
 
 import { M2MTokenProvider } from "./auth.js";
@@ -126,21 +127,16 @@ export class ScanResultHandler implements ResultHandler {
       throw new Error("Kafka callback is missing callbackKafkaTopic");
     }
 
-    const token = await this.tokenProvider.getToken();
-    await this.http.post(
-      this.config.busApi.eventsUrl,
+    await createBusApiClient({
+      BUSAPI_URL: this.config.busApi.eventsUrl,
+      getToken: () => this.tokenProvider.getToken(),
+    }).postEvent(
       {
         "mime-type": "application/json",
         originator: this.config.busApi.originator,
         payload: externalPayload,
         timestamp: new Date().toISOString(),
         topic: result.callbackKafkaTopic,
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
       },
     );
   }

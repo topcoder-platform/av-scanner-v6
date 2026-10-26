@@ -1,11 +1,8 @@
+import { createM2MClient, type M2MClient } from "tc-core-library-js";
 import type { AxiosInstance } from "axios";
 
 import type { AppConfig } from "./config.js";
 
-interface TokenResponse {
-  access_token?: string;
-  expires_in?: number;
-}
 
 /**
  * Reads a JWT expiry without verifying the token, solely to bound local cache.
@@ -47,64 +44,19 @@ export function jwtCacheLifetimeSeconds(
 
 /** Auth0 client-credentials token provider with bounded in-memory caching. */
 export class M2MTokenProvider {
-  private cachedToken?: string;
-  private cacheExpiresAt = 0;
+  private client?: M2MClient;
 
-  /**
-   * Creates a token provider compatible with direct Auth0 and Topcoder's proxy.
-   *
-   * @param config - Auth0 URL, audience, credentials, proxy, and cache settings.
-   * @param http - Axios client with the application's request timeout.
-   */
-  constructor(
-    private readonly config: AppConfig["auth"],
-    private readonly http: AxiosInstance,
-  ) {}
+  /** Accepts scanner auth settings and its existing HTTP dependency; no I/O or errors at construction. */
+  constructor(private readonly config: AppConfig["auth"], http: AxiosInstance) { void http; }
 
-  /**
-   * Gets a cached bearer token or requests a new client-credentials token.
-   * ResultService uses this immediately before posting an event to Bus API.
-   *
-   * @returns Auth0 access token without a Bearer prefix.
-   * @throws When credentials are missing or the token endpoint fails.
-   */
+  /** Returns the service token through tc-core; rejects on missing credentials or token endpoint failure. */
   async getToken(): Promise<string> {
-    if (this.cachedToken && Date.now() < this.cacheExpiresAt) {
-      return this.cachedToken;
-    }
-
-    const { audience, clientId, clientSecret, proxyUrl, url } = this.config;
-    if (!url || !audience || !clientId || !clientSecret) {
-      throw new Error(
-        "AUTH0_URL, AUTH0_AUDIENCE, AUTH0_CLIENT_ID, and AUTH0_CLIENT_SECRET are required for kafka callbacks",
-      );
-    }
-
-    const response = await this.http.post<TokenResponse>(proxyUrl ?? url, {
-      audience,
-      auth0_url: url,
-      client_id: clientId,
-      client_secret: clientSecret,
-      grant_type: "client_credentials",
+    this.client ??= createM2MClient({
+      AUTH0_URL: this.config.url,
+      AUTH0_AUDIENCE: this.config.audience,
+      AUTH0_PROXY_SERVER_URL: this.config.proxyUrl,
+      TOKEN_CACHE_TIME: this.config.tokenCacheSeconds,
     });
-    if (!response.data.access_token) {
-      throw new Error("Auth0 token response did not include access_token");
-    }
-
-    const jwtLifetime = jwtCacheLifetimeSeconds(response.data.access_token);
-    const responseLifetime =
-      typeof response.data.expires_in === "number"
-        ? Math.max(0, response.data.expires_in - 60)
-        : undefined;
-    const knownTokenLifetime = responseLifetime ?? jwtLifetime ?? 0;
-    const cacheLifetime = Math.min(
-      knownTokenLifetime,
-      jwtLifetime ?? knownTokenLifetime,
-      this.config.tokenCacheSeconds,
-    );
-
-    this.cachedToken = response.data.access_token;
-    this.cacheExpiresAt = Date.now() + cacheLifetime * 1000;
-    return this.cachedToken;
+    return this.client.getMachineToken(this.config.clientId || '', this.config.clientSecret || '');
   }
 }

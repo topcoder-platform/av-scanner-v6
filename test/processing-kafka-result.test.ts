@@ -5,6 +5,7 @@ import test from "node:test";
 import axios, {
   AxiosHeaders,
   type AxiosAdapter,
+  type AxiosInstance,
   type InternalAxiosRequestConfig,
 } from "axios";
 import { createLogger } from "winston";
@@ -353,7 +354,17 @@ function recordingAdapter(
   };
 }
 
-void test("M2MTokenProvider does not cache an expired JWT without expires_in", async () => {
+/** Adapts the existing isolated Axios test transport to fetch for the shared client.
+ * @param http Recording HTTP fixture. @returns A fetch replacement; transport errors propagate to tc-core.
+ */
+function recordingFetch(http: AxiosInstance): typeof fetch {
+  return async (input, init) => {
+    const response = await http.request({ url: typeof input === "string" ? input : input instanceof URL ? input.href : input.url, method: init?.method, data: init?.body, headers: init?.headers as Record<string, string> });
+    return new Response(JSON.stringify(response.data), { status: response.status });
+  };
+}
+
+void test("M2MTokenProvider does not cache an expired JWT without expires_in", async (context) => {
   const config = testConfig({
     AUTH0_AUDIENCE: "https://bus.example",
     AUTH0_CLIENT_ID: "client-id",
@@ -377,7 +388,9 @@ void test("M2MTokenProvider does not cache an expired JWT without expires_in", a
       statusText: "OK",
     });
   };
-  const tokens = new M2MTokenProvider(config.auth, axios.create({ adapter }));
+  const http = axios.create({ adapter });
+  context.mock.method(globalThis, "fetch", recordingFetch(http));
+  const tokens = new M2MTokenProvider(config.auth, http);
 
   assert.equal(jwtCacheLifetimeSeconds(expiredToken), 0);
   await tokens.getToken();
@@ -386,16 +399,17 @@ void test("M2MTokenProvider does not cache an expired JWT without expires_in", a
   assert.equal(requests.length, 2);
 });
 
-void test("ScanResultHandler stages a clean copy and posts the complete Bus envelope", async () => {
+void test("ScanResultHandler stages a clean copy and posts the complete Bus envelope", async (context) => {
   const config = testConfig({
     AUTH0_AUDIENCE: "https://bus.example",
     AUTH0_CLIENT_ID: "client-id",
     AUTH0_CLIENT_SECRET: "client-secret",
     AUTH0_URL: "https://auth.example/token",
-    BUSAPI_EVENTS_URL: "https://bus.example/events",
+    BUSAPI_EVENTS_URL: "https://bus.example/v6/bus/events",
   });
   const requests: RecordedRequest[] = [];
   const http = axios.create({ adapter: recordingAdapter(requests) });
+  context.mock.method(globalThis, "fetch", recordingFetch(http));
   const { store, copies, deletes } = objectStoreFixture(4);
   const tokens = new M2MTokenProvider(config.auth, http);
   const handler = new ScanResultHandler(config, store, tokens, http);
@@ -430,7 +444,7 @@ void test("ScanResultHandler stages a clean copy and posts the complete Bus enve
   assert.equal("moveFile" in result, false);
   assert.equal("callbackOption" in result, false);
   assert.equal(requests.length, 2);
-  assert.equal(requests[1]?.url, "https://bus.example/events");
+  assert.equal(requests[1]?.url, "https://bus.example/v6/bus/events");
   assert.equal(requests[1]?.headers.Authorization, "Bearer m2m-token");
   const envelope = requests[1]?.data as Record<string, unknown>;
   assert.equal(envelope.topic, "submission.scan.complete");
@@ -443,21 +457,22 @@ void test("ScanResultHandler stages a clean copy and posts the complete Bus enve
   ]);
 });
 
-void test("ScanResultHandler retains the source when callback delivery fails", async () => {
+void test("ScanResultHandler retains the source when callback delivery fails", async (context) => {
   const config = testConfig({
     AUTH0_AUDIENCE: "https://bus.example",
     AUTH0_CLIENT_ID: "client-id",
     AUTH0_CLIENT_SECRET: "client-secret",
     AUTH0_URL: "https://auth.example/token",
-    BUSAPI_EVENTS_URL: "https://bus.example/events",
+    BUSAPI_EVENTS_URL: "https://bus.example/v6/bus/events",
   });
   const requests: RecordedRequest[] = [];
   const http = axios.create({
     adapter: recordingAdapter(
       requests,
-      new Set(["https://bus.example/events"]),
+      new Set(["https://bus.example/v6/bus/events"]),
     ),
   });
+  context.mock.method(globalThis, "fetch", recordingFetch(http));
   const { store, copies, deletes } = objectStoreFixture(4);
   const handler = new ScanResultHandler(
     config,
@@ -481,7 +496,7 @@ void test("ScanResultHandler retains the source when callback delivery fails", a
       },
       { bucket: "source-bucket", key: "source.zip", region: "us-east-1" },
     ),
-    /Simulated failure/,
+    /Request failed or timed out/,
   );
 
   assert.equal(copies.length, 1);
