@@ -20,8 +20,11 @@ RUN pnpm lint && pnpm typecheck && pnpm build && pnpm test && pnpm prune --prod
 FROM alpine:3.24 AS runtime
 
 ARG NODE_VERSION
+# Alpine replaces old APK patch versions. Keep the configured Node major while
+# accepting maintained patch releases and verify the selected runtime below.
 RUN apk upgrade --no-cache \
-    && apk add --no-cache nodejs-current=${NODE_VERSION}-r0 \
+    && apk add --no-cache "nodejs-current~${NODE_VERSION%%.*}" \
+    && test "$(node -p 'process.versions.node.split(".")[0]')" = "${NODE_VERSION%%.*}" \
     && addgroup -S -g 10001 app \
     && adduser -S -D -u 10001 -G app -h /home/app app \
     && mkdir -p /app /home/app \
