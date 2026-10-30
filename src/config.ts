@@ -343,7 +343,7 @@ export function loadConfig(
       eventsUrl:
         environment.BUSAPI_EVENTS_URL ??
         environment.BUS_API_URL ??
-        "https://api.topcoder-dev.com/v5/bus/events",
+        "https://api.topcoder-dev.com/v6/bus/events",
       originator: environment.KAFKA_ORIGINATOR ?? "file-scanner-processor",
     },
     clamAv: {
