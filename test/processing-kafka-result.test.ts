@@ -488,6 +488,155 @@ void test("ScanResultHandler retains the source when callback delivery fails", a
   assert.equal(deletes.length, 0);
 });
 
+void test("Scan movement preserves objects already at their destination", async (t) => {
+  const scenarios = [
+    {
+      name: "clean object already in the clean bucket",
+      sourceUrl: "https://s3.amazonaws.com/clean-bucket/submission.zip",
+      sourceBucket: "clean-bucket",
+      sourceKey: "submission.zip",
+      fileName: "submission.zip",
+      destinationBucket: "clean-bucket",
+      expectedUrl: "https://s3.amazonaws.com/clean-bucket/submission.zip",
+      isInfected: false,
+      shouldMove: false,
+    },
+    {
+      name: "encoded virtual-hosted URL identifies the same object",
+      sourceUrl:
+        "https://clean-bucket.s3.us-east-1.amazonaws.com/folder/submission%20%2B%2520.zip",
+      sourceBucket: "clean-bucket",
+      sourceKey: "folder/submission +%20.zip",
+      fileName: "folder/submission +%20.zip",
+      destinationBucket: "clean-bucket",
+      expectedUrl:
+        "https://s3.amazonaws.com/clean-bucket/folder/submission%20%2B%2520.zip",
+      isInfected: false,
+      shouldMove: false,
+    },
+    {
+      name: "infected object already in the quarantine bucket",
+      sourceUrl: "s3://quarantine-bucket/submission.zip",
+      sourceBucket: "quarantine-bucket",
+      sourceKey: "submission.zip",
+      fileName: "submission.zip",
+      destinationBucket: "quarantine-bucket",
+      expectedUrl: "https://s3.amazonaws.com/quarantine-bucket/submission.zip",
+      isInfected: true,
+      shouldMove: false,
+    },
+    {
+      name: "different keys in the same bucket still move",
+      sourceUrl: "s3://clean-bucket/incoming.zip",
+      sourceBucket: "clean-bucket",
+      sourceKey: "incoming.zip",
+      fileName: "submission.zip",
+      destinationBucket: "clean-bucket",
+      expectedUrl: "https://s3.amazonaws.com/clean-bucket/submission.zip",
+      isInfected: false,
+      shouldMove: true,
+    },
+    {
+      name: "infected object in the clean bucket still moves to quarantine",
+      sourceUrl: "s3://clean-bucket/submission.zip",
+      sourceBucket: "clean-bucket",
+      sourceKey: "submission.zip",
+      fileName: "submission.zip",
+      destinationBucket: "quarantine-bucket",
+      expectedUrl: "https://s3.amazonaws.com/quarantine-bucket/submission.zip",
+      isInfected: true,
+      shouldMove: true,
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async () => {
+      const config = testConfig({
+        AUTH0_AUDIENCE: "https://bus.example",
+        AUTH0_CLIENT_ID: "client-id",
+        AUTH0_CLIENT_SECRET: "client-secret",
+        AUTH0_URL: "https://auth.example/token",
+        BUSAPI_EVENTS_URL: "https://bus.example/events",
+      });
+      const requests: RecordedRequest[] = [];
+      const http = axios.create({ adapter: recordingAdapter(requests) });
+      const { store, copies, deletes, openCount } = objectStoreFixture(4);
+      const results = new ScanResultHandler(
+        config,
+        store,
+        new M2MTokenProvider(config.auth, http),
+        http,
+      );
+      let scanCount = 0;
+      const scanner: AntivirusScanner = {
+        async ping() {},
+        async scan(stream) {
+          scanCount += 1;
+          for await (const chunk of stream) {
+            void chunk;
+          }
+          return scenario.isInfected;
+        },
+      };
+      const processor = new ScanProcessor(
+        config,
+        store,
+        scanner,
+        results,
+        logger,
+      );
+      const handler = new KafkaMessageHandler(config, processor, logger);
+      const { message, commits } = kafkaMessage(
+        JSON.stringify(
+          scanEvent({
+            callbackKafkaTopic: "submission.scan.complete",
+            callbackOption: CallbackOptions.Kafka,
+            cleanDestinationBucket: "clean-bucket",
+            fileName: scenario.fileName,
+            moveFile: true,
+            quarantineDestinationBucket: "quarantine-bucket",
+            url: scenario.sourceUrl,
+          }),
+        ),
+      );
+      const commit = message.commit.bind(message);
+      message.commit = () => {
+        assert.equal(requests.length, 2, "callback must precede commit");
+        assert.equal(deletes.length, 0, "source must survive until commit");
+        return commit();
+      };
+
+      await handler.handle(message);
+
+      assert.equal(openCount.value, 1);
+      assert.equal(scanCount, 1, "existing destination must still be scanned");
+      assert.equal(commits.value, 1);
+      const source = {
+        bucket: scenario.sourceBucket,
+        key: scenario.sourceKey,
+        region: "us-east-1",
+      };
+      assert.deepEqual(
+        copies,
+        scenario.shouldMove
+          ? [[source, scenario.destinationBucket, scenario.fileName]]
+          : [],
+      );
+      assert.deepEqual(deletes, scenario.shouldMove ? [source] : []);
+      assert.equal(requests[1]?.url, "https://bus.example/events");
+      const envelope = requests[1]?.data as Record<string, unknown>;
+      assert.equal(envelope.topic, "submission.scan.complete");
+      assert.deepEqual(envelope.payload, {
+        fileName: scenario.fileName,
+        isInfected: scenario.isInfected,
+        status: "scanned",
+        submissionId: "submission-id",
+        url: scenario.expectedUrl,
+      });
+    });
+  }
+});
+
 void test("ScanResultHandler preserves webhook API-key authentication and payload shape", async () => {
   const config = testConfig();
   const requests: RecordedRequest[] = [];
