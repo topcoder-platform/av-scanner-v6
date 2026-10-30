@@ -565,16 +565,17 @@ void test("Scan movement preserves objects already at their destination", async 
   ];
 
   for (const scenario of scenarios) {
-    await t.test(scenario.name, async () => {
+    await t.test(scenario.name, async (context) => {
       const config = testConfig({
         AUTH0_AUDIENCE: "https://bus.example",
         AUTH0_CLIENT_ID: "client-id",
         AUTH0_CLIENT_SECRET: "client-secret",
         AUTH0_URL: "https://auth.example/token",
-        BUSAPI_EVENTS_URL: "https://bus.example/events",
+        BUSAPI_EVENTS_URL: "https://bus.example/v6/bus/events",
       });
       const requests: RecordedRequest[] = [];
       const http = axios.create({ adapter: recordingAdapter(requests) });
+      context.mock.method(globalThis, "fetch", recordingFetch(http));
       const { store, copies, deletes, openCount } = objectStoreFixture(4);
       const results = new ScanResultHandler(
         config,
@@ -638,7 +639,7 @@ void test("Scan movement preserves objects already at their destination", async 
           : [],
       );
       assert.deepEqual(deletes, scenario.shouldMove ? [source] : []);
-      assert.equal(requests[1]?.url, "https://bus.example/events");
+      assert.equal(requests[1]?.url, "https://bus.example/v6/bus/events");
       const envelope = requests[1]?.data as Record<string, unknown>;
       assert.equal(envelope.topic, "submission.scan.complete");
       assert.deepEqual(envelope.payload, {
