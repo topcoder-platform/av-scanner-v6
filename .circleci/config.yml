@@ -24,6 +24,11 @@ build_and_deploy_steps: &build_and_deploy_steps
   - checkout
   - setup_remote_docker
   - run: *install_dependencies
+  - run:
+      name: Validate deployment script
+      command: |
+        bash -n deployment/deploy-existing-service.sh
+        python3 -B -m unittest discover -s deployment -p 'test_*.py'
   - run: *install_deploy_suite
   - run:
       name: Build the application and ClamAV images

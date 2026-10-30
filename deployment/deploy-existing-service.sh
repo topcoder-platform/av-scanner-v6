@@ -48,6 +48,23 @@ AWS_ECS_CLAMAV_CONTAINER_NAME="$(read_deploy_parameter AWS_ECS_CLAMAV_CONTAINER_
 AWS_REPOSITORY="$(read_deploy_parameter AWS_REPOSITORY)"
 AWS_REPOSITORY_CLAMAV="$(read_deploy_parameter AWS_REPOSITORY_CLAMAV)"
 
+# Check before publishing images: a failed rollback requires an operator to
+# reconcile the live service, not another deployment or an automatic skip.
+stack_status="$(aws cloudformation describe-stacks \
+  --region "$AWS_REGION" \
+  --stack-name "$AWS_CLOUDFORMATION_STACK_NAME" \
+  --query 'Stacks[0].StackStatus' \
+  --output text)"
+case "$stack_status" in
+  CREATE_COMPLETE|UPDATE_COMPLETE|UPDATE_ROLLBACK_COMPLETE|IMPORT_COMPLETE|IMPORT_ROLLBACK_COMPLETE)
+    ;;
+  *)
+    echo "CloudFormation stack ${AWS_CLOUDFORMATION_STACK_NAME} is ${stack_status}; deployment stopped before publishing images." >&2
+    echo "Inspect stack events and follow the failed rollback recovery procedure in ECS_Deployment.md before retrying." >&2
+    exit 1
+    ;;
+esac
+
 image_tag="v6-${CIRCLE_BUILD_NUM}-${CIRCLE_SHA1:0:12}"
 registry="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 app_image="${registry}/${AWS_REPOSITORY}:${image_tag}"

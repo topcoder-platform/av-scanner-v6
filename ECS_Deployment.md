@@ -1034,6 +1034,63 @@ them using the assertion in step 3. A routine deployment must never target
 
 ## Rollback
 
+### Recover a failed CloudFormation rollback
+
+The deployment script checks the stack status before logging into ECR or
+publishing images. A failed or active stack operation stops deployment with a
+diagnostic. CI does not automatically continue rollbacks or skip resources.
+
+On 2026-10-30, dev inspection found `av-scanner-v6-dev` stuck in
+`UPDATE_ROLLBACK_FAILED` since 2026-08-17. `ECSService` failed both the update
+and rollback with an ECS deployment circuit-breaker error. The live service
+was healthy on `av-scanner-v6:5`, using `v6-17-0ec255ef29cf` in both containers,
+but the stack expected revision `:4` and `v6-8-0ec255ef29cf`. The latter app
+image was absent from ECR at inspection time. This prevents restoring that
+revision now; it does not establish the cause of the August failure.
+
+Recovery is a separate operational action. Before making changes, confirm:
+
+- the account, region, stack events, and failed logical resource;
+- the live service has its desired number of healthy tasks, a completed
+  deployment, and healthy load-balancer targets;
+- both images for the live service still exist in ECR, and the legacy service
+  remains drained;
+- no CI deployment is running during recovery.
+
+When the failed rollback resource is only `ECSService` and preserving the live
+healthy service is the reviewed recovery choice, skip only that resource:
+
+```bash
+aws cloudformation continue-update-rollback \
+  --region us-east-1 \
+  --stack-name av-scanner-v6-dev \
+  --resources-to-skip ECSService
+aws cloudformation wait stack-rollback-complete \
+  --region us-east-1 \
+  --stack-name av-scanner-v6-dev
+```
+
+Skipping leaves the service inconsistent with CloudFormation until it is
+reconciled. Immediately prepare an UPDATE change set using the stack's previous
+template (`--use-previous-template`), retaining all parameter values except
+`ImageTag`, which must identify the verified healthy images. At the inspection
+above that tag was `v6-17-0ec255ef29cf`; rediscover it before recovery.
+
+Review the change set before execution: only `ScannerTaskDefinition` and
+`ECSService` should change. Execute it, wait for `UPDATE_COMPLETE` and ECS
+stability, and verify that the service task definition matches the stack's
+`ScannerTaskDefinition`, both images match the selected tag, and tasks and ALB
+targets are healthy. This may roll tasks using the same working images. Keep
+the legacy service at zero throughout.
+
+Only after reconciliation should the normal CircleCI deployment install the
+new application images. Keep the current and rollback image tags available in
+both repositories. Do not substitute a new image under a missing historical
+tag or delete/recreate the stack to bypass the failure.
+
+See [AWS's failed rollback recovery guidance](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/using-cfn-updating-stacks-continueupdaterollback.html)
+for resource-skip constraints and the required reconciliation.
+
 ### Roll back an image in the dedicated service
 
 For an ordinary release regression, keep using the new service and update
