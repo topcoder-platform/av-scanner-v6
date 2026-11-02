@@ -34,7 +34,7 @@ const legacyBooleanSchema = z.preprocess((value) => {
     return false;
   }
   return value;
-}, z.boolean());
+}, z.boolean("Expected boolean"));
 
 const callbackHookSchema = z
   .object({
@@ -46,7 +46,7 @@ const callbackHookSchema = z
     ]),
     method: normalizedEnum([WebhookMethods.Get, WebhookMethods.Post]),
     secret: z.string().min(1).optional(),
-    url: z.string().url(),
+    url: z.string().url("Invalid url"),
   })
   .strict()
   .superRefine((hook, context) => {
@@ -146,7 +146,7 @@ function createSchema(config: AppConfig) {
           fileName: z.string().min(1),
           moveFile: legacyBooleanSchema,
           quarantineDestinationBucket: z.string().min(1).optional(),
-          url: z.string().url(),
+          url: z.string().url("Invalid url"),
         })
         .passthrough()
         .superRefine((payload, context) => {

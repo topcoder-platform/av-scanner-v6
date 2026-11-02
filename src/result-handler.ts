@@ -55,13 +55,15 @@ export class ScanResultHandler implements ResultHandler {
    * @param config - Bus API and service identity settings.
    * @param objectStore - S3 copy/delete implementation.
    * @param tokenProvider - Auth0 token source used for Bus API events.
-   * @param http - Axios client used for webhooks and the Bus API.
+   * @param http - Axios client used for webhooks.
+   * @param fetchTransport - Optional isolated transport for the shared Bus client.
    */
   constructor(
     private readonly config: AppConfig,
     private readonly objectStore: ObjectStore,
     private readonly tokenProvider: M2MTokenProvider,
     private readonly http: AxiosInstance,
+    private readonly fetchTransport?: typeof globalThis.fetch,
   ) {}
 
   /**
@@ -139,15 +141,14 @@ export class ScanResultHandler implements ResultHandler {
     await createBusApiClient({
       BUSAPI_URL: this.config.busApi.eventsUrl,
       getToken: () => this.tokenProvider.getToken(),
-    }).postEvent(
-      {
-        "mime-type": "application/json",
-        originator: this.config.busApi.originator,
-        payload: externalPayload,
-        timestamp: new Date().toISOString(),
-        topic: result.callbackKafkaTopic,
-      },
-    );
+      fetch: this.fetchTransport,
+    }).postEvent({
+      "mime-type": "application/json",
+      originator: this.config.busApi.originator,
+      payload: externalPayload,
+      timestamp: new Date().toISOString(),
+      topic: result.callbackKafkaTopic,
+    });
   }
 
   /**
