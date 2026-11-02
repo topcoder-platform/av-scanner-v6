@@ -359,8 +359,20 @@ function recordingAdapter(
  */
 function recordingFetch(http: AxiosInstance): typeof fetch {
   return async (input, init) => {
-    const response = await http.request({ url: typeof input === "string" ? input : input instanceof URL ? input.href : input.url, method: init?.method, data: init?.body, headers: init?.headers as Record<string, string> });
-    return new Response(JSON.stringify(response.data), { status: response.status });
+    const response = await http.request({
+      url:
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url,
+      method: init?.method,
+      data: init?.body,
+      headers: init?.headers as Record<string, string>,
+    });
+    return new Response(JSON.stringify(response.data), {
+      status: response.status,
+    });
   };
 }
 
@@ -390,7 +402,7 @@ void test("M2MTokenProvider does not cache an expired JWT without expires_in", a
   };
   const http = axios.create({ adapter });
   context.mock.method(globalThis, "fetch", recordingFetch(http));
-  const tokens = new M2MTokenProvider(config.auth, http);
+  const tokens = new M2MTokenProvider(config.auth, http, globalThis.fetch);
 
   assert.equal(jwtCacheLifetimeSeconds(expiredToken), 0);
   await tokens.getToken();
@@ -411,8 +423,14 @@ void test("ScanResultHandler stages a clean copy and posts the complete Bus enve
   const http = axios.create({ adapter: recordingAdapter(requests) });
   context.mock.method(globalThis, "fetch", recordingFetch(http));
   const { store, copies, deletes } = objectStoreFixture(4);
-  const tokens = new M2MTokenProvider(config.auth, http);
-  const handler = new ScanResultHandler(config, store, tokens, http);
+  const tokens = new M2MTokenProvider(config.auth, http, globalThis.fetch);
+  const handler = new ScanResultHandler(
+    config,
+    store,
+    tokens,
+    http,
+    globalThis.fetch,
+  );
   const payload: ScanPayload = {
     callbackKafkaTopic: "submission.scan.complete",
     callbackOption: CallbackOptions.Kafka,
@@ -477,8 +495,9 @@ void test("ScanResultHandler retains the source when callback delivery fails", a
   const handler = new ScanResultHandler(
     config,
     store,
-    new M2MTokenProvider(config.auth, http),
+    new M2MTokenProvider(config.auth, http, globalThis.fetch),
     http,
+    globalThis.fetch,
   );
 
   await assert.rejects(
@@ -580,8 +599,9 @@ void test("Scan movement preserves objects already at their destination", async 
       const results = new ScanResultHandler(
         config,
         store,
-        new M2MTokenProvider(config.auth, http),
+        new M2MTokenProvider(config.auth, http, globalThis.fetch),
         http,
+        globalThis.fetch,
       );
       let scanCount = 0;
       const scanner: AntivirusScanner = {
@@ -658,8 +678,14 @@ void test("ScanResultHandler preserves webhook API-key authentication and payloa
   const requests: RecordedRequest[] = [];
   const http = axios.create({ adapter: recordingAdapter(requests) });
   const { store } = objectStoreFixture(4);
-  const tokens = new M2MTokenProvider(config.auth, http);
-  const handler = new ScanResultHandler(config, store, tokens, http);
+  const tokens = new M2MTokenProvider(config.auth, http, globalThis.fetch);
+  const handler = new ScanResultHandler(
+    config,
+    store,
+    tokens,
+    http,
+    globalThis.fetch,
+  );
 
   const processed = await handler.handle(
     {

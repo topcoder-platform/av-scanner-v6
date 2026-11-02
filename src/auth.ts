@@ -3,7 +3,6 @@ import type { AxiosInstance } from "axios";
 
 import type { AppConfig } from "./config.js";
 
-
 /**
  * Reads a JWT expiry without verifying the token, solely to bound local cache.
  * Authentication still occurs at Bus API; this parser never trusts JWT claims
@@ -47,7 +46,13 @@ export class M2MTokenProvider {
   private client?: M2MClient;
 
   /** Accepts scanner auth settings and its existing HTTP dependency; no I/O or errors at construction. */
-  constructor(private readonly config: AppConfig["auth"], http: AxiosInstance) { void http; }
+  constructor(
+    private readonly config: AppConfig["auth"],
+    http: AxiosInstance,
+    private readonly fetchTransport?: typeof globalThis.fetch,
+  ) {
+    void http;
+  }
 
   /** Returns the service token through tc-core; rejects on missing credentials or token endpoint failure. */
   async getToken(): Promise<string> {
@@ -56,7 +61,11 @@ export class M2MTokenProvider {
       AUTH0_AUDIENCE: this.config.audience,
       AUTH0_PROXY_SERVER_URL: this.config.proxyUrl,
       TOKEN_CACHE_TIME: this.config.tokenCacheSeconds,
+      fetch: this.fetchTransport,
     });
-    return this.client.getMachineToken(this.config.clientId || '', this.config.clientSecret || '');
+    return this.client.getMachineToken(
+      this.config.clientId || "",
+      this.config.clientSecret || "",
+    );
   }
 }

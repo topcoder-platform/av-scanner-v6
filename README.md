@@ -14,7 +14,7 @@ cause ECS task churn.
 
 ## Runtime and processing flow
 
-- Node.js `26.5.1`, pinned by `.nvmrc` and installed from Alpine 3.24 in the
+- Node.js `26.12.1`, pinned by `.nvmrc` and installed from Alpine 3.24 in the
   final application image.
 - ClamAV `1.5.4`, pinned through the official stable sidecar image digest.
 - The final application image contains Alpine's system Node and production
@@ -368,3 +368,5 @@ Node major. The runtime keeps Alpine's dynamically linked Node and system
 libraries. Existing non-root users and application entrypoints are preserved.
 Build stages using a versioned official Node image retain their configured
 version, and pnpm build arguments are explicitly declared in the consuming stage.
+
+The security dependency update uses Zod 4 while retaining the existing invalid-URL and boolean validation messages. The shared auth/Bus clients keep their native HTTP transport in production; tests explicitly inject their isolated fetch transport. Run `pnpm test:dependency-compat` to check the legacy minimatch adapter in addition to the normal test suite. Rebuild and deploy both the application and ClamAV images to refresh their OS packages.

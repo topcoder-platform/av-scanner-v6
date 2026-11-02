@@ -23,4 +23,10 @@ export default tseslint.config(
       "@typescript-eslint/only-throw-error": "error",
     },
   },
+  {
+    files: ["tools/**/*.cjs"],
+    extends: [tseslint.configs.disableTypeChecked],
+    languageOptions: { globals: globals.node },
+    rules: { "@typescript-eslint/no-require-imports": "off" },
+  },
 );

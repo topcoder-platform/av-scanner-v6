@@ -1,4 +1,4 @@
-ARG NODE_VERSION=26.5.1
+ARG NODE_VERSION=26.12.1
 ARG PNPM_VERSION=11.15.1
 
 FROM node:${NODE_VERSION}-alpine AS dependencies
@@ -8,6 +8,7 @@ RUN npm install --global pnpm@${PNPM_VERSION}
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY patches ./patches
+COPY tools/minimatch-compat ./tools/minimatch-compat
 RUN pnpm install --frozen-lockfile
 
 FROM dependencies AS build
@@ -15,7 +16,7 @@ FROM dependencies AS build
 COPY eslint.config.mjs tsconfig.json tsconfig.build.json ./
 COPY src ./src
 COPY test ./test
-RUN pnpm lint && pnpm typecheck && pnpm build && pnpm test && pnpm prune --prod
+RUN pnpm run test:dependency-compat && pnpm lint && pnpm typecheck && pnpm build && pnpm test && pnpm prune --prod
 
 FROM alpine:3.24 AS runtime
 
