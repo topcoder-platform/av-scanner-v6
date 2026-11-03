@@ -515,7 +515,7 @@ void test("ScanResultHandler retains the source when callback delivery fails", a
       },
       { bucket: "source-bucket", key: "source.zip", region: "us-east-1" },
     ),
-    /Request failed or timed out/,
+    /Scan callback delivery failed after 3 attempts/,
   );
 
   assert.equal(copies.length, 1);

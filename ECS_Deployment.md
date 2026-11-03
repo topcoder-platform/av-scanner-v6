@@ -1161,3 +1161,21 @@ maximum capacity, so rolling releases temporarily need another ENI/IP and
 Fargate capacity. The runtime secrets, common parameters, IAM roles, and ECR
 repositories are reused; the service, task family, target group, listener rule,
 log group, and stack are dedicated to v6.
+
+## Callback failure topic rollout
+
+The scanner now retains exhausted callback deliveries in
+`<AVSCAN_TOPIC>.callback-failures` before committing the input. Startup creates
+this topic if absent. The existing Kafka principal needs describe/create/write
+access; alternatively provision the topic before deployment. Defaults are one
+partition, two replicas, minimum two in-sync replicas, seven-day retention and
+`cleanup.policy=delete`. Existing topics are not modified. Restrict readers
+because replay records contain the original callback settings, including any
+credentials. Monitor retained-delivery events and recover within the retention
+window using the replay procedure in README.md.
+
+The ECS template explicitly supplies the retry budget and topic replication and
+retention defaults. `CallbackDeadLetterReplicas` and
+`CallbackDeadLetterRetentionMs` can be changed through stack parameters after
+reviewing the broker topology and recovery requirements. Do not reduce replicas
+for dev or production merely to work around an unavailable broker.

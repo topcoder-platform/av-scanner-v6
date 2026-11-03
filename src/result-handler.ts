@@ -1,5 +1,6 @@
 import { createBusApiClient } from "tc-core-library-js";
 import type { AxiosInstance, AxiosRequestConfig } from "axios";
+import { setTimeout as wait } from "node:timers/promises";
 
 import { M2MTokenProvider } from "./auth.js";
 import type { AppConfig } from "./config.js";
@@ -23,6 +24,17 @@ const CONTROL_FIELDS = [
   "callbackHook",
   "callbackKafkaTopic",
 ] as const;
+
+/** Exhausted delivery with its terminal result; never retains an HTTP error/config. */
+export class CallbackDeliveryError extends Error {
+  constructor(
+    readonly result: ScanPayload,
+    readonly attempts: number,
+  ) {
+    super(`Scan callback delivery failed after ${attempts} attempts`);
+    this.name = "CallbackDeliveryError";
+  }
+}
 
 /**
  * Removes scanner routing controls from externally delivered result payloads.
@@ -64,6 +76,7 @@ export class ScanResultHandler implements ResultHandler {
     private readonly tokenProvider: M2MTokenProvider,
     private readonly http: AxiosInstance,
     private readonly fetchTransport?: typeof globalThis.fetch,
+    private readonly retryWait: (delayMs: number) => Promise<void> = wait,
   ) {}
 
   /**
@@ -103,10 +116,24 @@ export class ScanResultHandler implements ResultHandler {
     }
 
     const externalPayload = callbackPayload(result);
-    if (result.callbackOption === CallbackOptions.Kafka) {
-      await this.postBusEvent(result, externalPayload);
-    } else if (result.callbackOption === CallbackOptions.Webhook) {
-      await this.postWebhook(result, externalPayload);
+    if (result.callbackOption !== CallbackOptions.NoCallback) {
+      for (let attempt = 1; ; attempt += 1) {
+        try {
+          if (result.callbackOption === CallbackOptions.Kafka) {
+            await this.postBusEvent(result, externalPayload);
+          } else {
+            await this.postWebhook(result, externalPayload);
+          }
+          break;
+        } catch {
+          if (attempt >= this.config.webhooks.maxAttempts) {
+            throw new CallbackDeliveryError(result, attempt);
+          }
+          await this.retryWait(
+            this.config.webhooks.retryBaseDelayMs * 2 ** (attempt - 1),
+          );
+        }
+      }
     }
 
     return {
