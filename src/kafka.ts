@@ -14,6 +14,8 @@ import type { Logger } from "winston";
 
 import type { AppConfig } from "./config.js";
 import { InvalidScanEventError } from "./errors.js";
+import type { DeadLetterPublisher } from "./dead-letter.js";
+import { CallbackDeliveryError } from "./result-handler.js";
 import { Semaphore } from "./semaphore.js";
 import type { ProcessedScan } from "./types.js";
 import { validateScanEvent } from "./validation.js";
@@ -587,6 +589,7 @@ export class KafkaMessageHandler {
     private readonly config: AppConfig,
     private readonly processor: ScanEventProcessor,
     private readonly logger: Logger,
+    private readonly deadLetters?: DeadLetterPublisher,
   ) {}
 
   /**
@@ -594,7 +597,8 @@ export class KafkaMessageHandler {
    * Tombstones, non-buffer values, malformed JSON, and envelope-topic
    * mismatches are intentionally committed. Deterministically invalid events
    * are also discarded and committed so they cannot poison the consumer group.
-   * Operational failures propagate without a commit, stopping consumption
+   * Exhausted callbacks are retained in Kafka before committing their input.
+   * Other operational failures propagate without a commit, stopping consumption
    * before later records in that partition run.
    *
    * @param message - Platformatic Kafka message with a manual commit callback.
@@ -660,7 +664,33 @@ export class KafkaMessageHandler {
       return;
     }
 
-    const processed = await this.processor.process(event);
+    let processed: ProcessedScan;
+    try {
+      processed = await this.processor.process(event);
+    } catch (error) {
+      if (!(error instanceof CallbackDeliveryError) || !this.deadLetters) {
+        throw error;
+      }
+      const id = `${message.topic}:${message.partition}:${message.offset}`;
+      await this.deadLetters.publish({
+        schemaVersion: 1,
+        id,
+        failedAt: new Date().toISOString(),
+        source: metadata,
+        originalEvent: event,
+        result: error.result,
+        attempts: error.attempts,
+      });
+      await message.commit();
+      // Keep the source object for replay; do not run post-commit deletion.
+      this.logger.error("Scan callback retained for replay", {
+        ...metadata,
+        deadLetterId: id,
+        deadLetterTopic: this.config.deadLetter.topic,
+        attempts: error.attempts,
+      });
+      return;
+    }
     await message.commit();
     if (processed.afterCommit) {
       try {
@@ -848,7 +878,9 @@ export class KafkaConsumerRunner {
    */
   private readonly consumerErrorListener = (error: Error): void => {
     const failure =
-      error instanceof Error ? error : new Error(String(error ?? "Kafka error"));
+      error instanceof Error
+        ? error
+        : new Error(String(error ?? "Kafka error"));
     this.logger.error("Kafka consumer client error", {
       error: failure.message,
     });

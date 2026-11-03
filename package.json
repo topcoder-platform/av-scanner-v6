@@ -17,7 +17,8 @@
     "start:dev": "tsx watch src/index.ts",
     "test": "tsx --test \"test/**/*.test.ts\"",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test:dependency-compat": "node --test tools/minimatch-compat/index.test.cjs"
+    "test:dependency-compat": "node --test tools/minimatch-compat/index.test.cjs",
+    "test:dead-letter-integration": "tsx test/dead-letter-kafka.integration.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1161.0",

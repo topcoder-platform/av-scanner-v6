@@ -30,6 +30,14 @@ Parameters:
     Type: String
   ClamAvRepositoryName:
     Type: String
+  CallbackDeadLetterReplicas:
+    Type: Number
+    Default: 2
+    MinValue: 1
+  CallbackDeadLetterRetentionMs:
+    Type: Number
+    Default: 604800000
+    MinValue: 86400000
   TaskCpu:
     Type: String
     Default: "2048"
@@ -260,6 +268,14 @@ Resources:
               Value: "2000"
             - Name: CLAMAV_SCAN_TIMEOUT_MS
               Value: "300000"
+            - Name: CALLBACK_MAX_ATTEMPTS
+              Value: "3"
+            - Name: CALLBACK_RETRY_BASE_DELAY_MS
+              Value: "1000"
+            - Name: AVSCAN_DLQ_REPLICAS
+              Value: !Ref CallbackDeadLetterReplicas
+            - Name: AVSCAN_DLQ_RETENTION_MS
+              Value: !Ref CallbackDeadLetterRetentionMs
             - Name: WEBHOOK_TIMEOUT_MS
               Value: "15000"
             - !If
