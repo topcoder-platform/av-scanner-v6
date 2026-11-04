@@ -71,6 +71,10 @@ def release(aws, m, settings, publisher, tag):
                 d.require(all(c['image'] == images[c['name']] for c in saved['taskDefinition']['containerDefinitions'] if c['name'] in images), 'Stack task images differ')
                 actual['tags'] = sorted(actual.get('tags', []), key=lambda x: x['key'])
                 expected['tags'] = sorted(expected.get('tags', []), key=lambda x: x['key'])
+                # CloudFormation may return the same named containers in a
+                # different order. Compare every field by container identity.
+                actual['containerDefinitions'].sort(key=lambda x: x['name'])
+                expected['containerDefinitions'].sort(key=lambda x: x['name'])
                 d.require(actual == expected and updated['desiredCount'] == service['desiredCount'], 'Non-image service configuration changed')
                 if d.verify_running(aws, m, definition, images, updated['desiredCount']): return definition
         time.sleep(10)

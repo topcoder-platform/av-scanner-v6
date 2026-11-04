@@ -55,20 +55,24 @@ class StackReleaseTests(unittest.TestCase):
         task = dict(family=self.m['taskFamily'], status='ACTIVE', networkMode='awsvpc', requiresCompatibilities=['FARGATE'], taskRoleArn=self.m['taskRoleArn'], executionRoleArn=self.m['executionRoleArn'], containerDefinitions=[dict(name=name, image='old', healthCheck={'command':['CMD', 'check']}) for name in images])
         saved = deepcopy(task)
         for c in saved['containerDefinitions']: c['image'] = images[c['name']]
+        saved['containerDefinitions'].reverse()
         previous = dict(taskDefinition='old', desiredCount=1)
         current = dict(taskDefinition='new', desiredCount=1)
         completed = deepcopy(self.stack)
         for param in completed['Parameters']:
             if param['ParameterKey'] in ('AppImageDigest', 'ClamAvImageDigest'):
                 param['ParameterValue'] = images['app' if param['ParameterKey']=='AppImageDigest' else 'filescanner'].split('@')[1]
-        for tags in ([], [{'key':'unexpected', 'value':'added'}]):
-            with self.subTest(tags=tags):
+        for tags, changed_health in (([], False), ([{'key':'unexpected', 'value':'added'}], False), ([], True)):
+            with self.subTest(tags=tags, changed_health=changed_health):
+                candidate = deepcopy(saved)
+                if changed_health:
+                    candidate['containerDefinitions'][0]['healthCheck'] = {'command': ['CMD', 'unexpected']}
                 aws = Mock()
-                reads = iter([{'taskDefinition':task, 'tags':[]}, {'taskDefinition':saved, 'tags':tags}])
+                reads = iter([{'taskDefinition':task, 'tags':[]}, {'taskDefinition':candidate, 'tags':tags}])
                 aws.call.side_effect = lambda service, op, **kw: next(reads) if op=='describe-task-definition' else {'Stacks':[completed]} if op=='describe-stacks' else {}
                 publisher = Mock()
                 publisher.publish.side_effect = lambda name, *args: images[name]
                 with patch.object(r, 'reviewed_stack', return_value=self.stack), patch.object(r.d, 'read_service', side_effect=[previous,previous,current]), patch.object(r.d, 'stable', return_value=True), patch.object(r.d, 'verify_running', return_value=True):
-                    if tags:
+                    if tags or changed_health:
                         with self.assertRaisesRegex(r.d.DeployError, 'Non-image'):r.release(aws,self.m,self.settings,publisher,'a'*40+'-1')
                     else:self.assertEqual(r.release(aws,self.m,self.settings,publisher,'a'*40+'-1'),'new')
