@@ -22,6 +22,14 @@ Parameters:
   DesiredCount:
     Type: Number
     MinValue: 0
+  AppImageDigest:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^sha256:[a-f0-9]{64}$"
+  ClamAvImageDigest:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^sha256:[a-f0-9]{64}$"
   ImageTag:
     Type: String
     AllowedPattern: "[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}"
@@ -75,9 +83,6 @@ Parameters:
     AllowedPattern: "/.+"
     Description: Existing scanner-specific SecureString parameter path.
   CommonParameterPrefix:
-    Type: String
-    AllowedPattern: "/.+"
-  DeployParameterPrefix:
     Type: String
     AllowedPattern: "/.+"
   EnvironmentName:
@@ -145,6 +150,8 @@ Rules:
         AssertDescription: Kafka client certificate and private-key ARNs must be supplied together.
 
 Conditions:
+  HasAppImageDigest: !Not [!Equals [!Ref AppImageDigest, ""]]
+  HasClamAvImageDigest: !Not [!Equals [!Ref ClamAvImageDigest, ""]]
   HasKafkaClientCertificate:
     !Not [!Equals [!Ref KafkaClientCertParameterArn, ""]]
   HasKafkaClientKey: !Not [!Equals [!Ref KafkaClientKeyParameterArn, ""]]
@@ -215,7 +222,10 @@ Resources:
       TaskRoleArn: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${TaskRoleName}
       ContainerDefinitions:
         - Name: app
-          Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/${AppRepositoryName}:${ImageTag}
+          Image: !If
+            - HasAppImageDigest
+            - !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/${AppRepositoryName}@${AppImageDigest}
+            - !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/${AppRepositoryName}:${ImageTag}
           Essential: true
           Cpu: !Ref AppContainerCpu
           Memory: !Ref AppContainerMemory
@@ -343,7 +353,10 @@ Resources:
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: app
         - Name: filescanner
-          Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/${ClamAvRepositoryName}:${ImageTag}
+          Image: !If
+            - HasClamAvImageDigest
+            - !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/${ClamAvRepositoryName}@${ClamAvImageDigest}
+            - !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/${ClamAvRepositoryName}:${ImageTag}
           Essential: true
           Cpu: !Ref ClamAvContainerCpu
           Memory: !Ref ClamAvContainerMemory
@@ -435,72 +448,10 @@ Resources:
         - Key: topcoder:operations:DevOpsIntegration
           Value: CircleCI
 
-  DeployCloudFormationStackParameter:
-    Type: AWS::SSM::Parameter
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      Name: !Sub ${DeployParameterPrefix}/AWS_CLOUDFORMATION_STACK_NAME
-      Type: String
-      Value: !Ref AWS::StackName
-  DeployClusterParameter:
-    Type: AWS::SSM::Parameter
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      Name: !Sub ${DeployParameterPrefix}/AWS_ECS_CLUSTER
-      Type: String
-      Value: !Ref ECSClusterName
-  DeployServiceParameter:
-    Type: AWS::SSM::Parameter
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      Name: !Sub ${DeployParameterPrefix}/AWS_ECS_SERVICE
-      Type: String
-      Value: av-scanner-v6
-  DeployTaskFamilyParameter:
-    Type: AWS::SSM::Parameter
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      Name: !Sub ${DeployParameterPrefix}/AWS_ECS_TASK_FAMILY
-      Type: String
-      Value: av-scanner-v6
-  DeployAppContainerParameter:
-    Type: AWS::SSM::Parameter
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      Name: !Sub ${DeployParameterPrefix}/AWS_ECS_APP_CONTAINER_NAME
-      Type: String
-      Value: app
-  DeployClamAvContainerParameter:
-    Type: AWS::SSM::Parameter
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      Name: !Sub ${DeployParameterPrefix}/AWS_ECS_CLAMAV_CONTAINER_NAME
-      Type: String
-      Value: filescanner
-  DeployAppRepositoryParameter:
-    Type: AWS::SSM::Parameter
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      Name: !Sub ${DeployParameterPrefix}/AWS_REPOSITORY
-      Type: String
-      Value: !Ref AppRepositoryName
-  DeployClamAvRepositoryParameter:
-    Type: AWS::SSM::Parameter
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      Name: !Sub ${DeployParameterPrefix}/AWS_REPOSITORY_CLAMAV
-      Type: String
-      Value: !Ref ClamAvRepositoryName
 
 Outputs:
+  DeploymentContract:
+    Value: oidc-digest-v1
   ClusterName:
     Description: Existing cluster used by the service.
     Value: !Ref ECSClusterName
@@ -513,8 +464,6 @@ Outputs:
     Value: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/${AppRepositoryName}
   ClamAvRepositoryUri:
     Value: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/${ClamAvRepositoryName}
-  DeployParameterPath:
-    Value: !Ref DeployParameterPrefix
   LogGroupName:
     Value: !Ref ScannerLogGroup
   TargetGroupArn:

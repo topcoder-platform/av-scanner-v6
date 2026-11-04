@@ -3,3 +3,10 @@ dist/
 coverage/
 .env
 *.log
+
+# Infrastructure definitions and detailed AWS inventories are maintained privately.
+/deploy/iam/
+/deploy/*-baseline.json
+
+__pycache__/
+*.py[cod]
