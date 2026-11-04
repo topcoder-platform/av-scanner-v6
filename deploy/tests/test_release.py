@@ -48,3 +48,27 @@ class StackReleaseTests(unittest.TestCase):
         with patch.object(r,'reviewed_stack',return_value=self.stack),patch.object(r.d,'read_service',return_value={'taskDefinition':'old'}),patch.object(r.d,'stable',return_value=True),patch.object(r.d,'task_request'):
             with self.assertRaises(r.d.DeployError):r.release(self.aws,self.m,self.settings,publisher,'a'*40+'-1')
         self.assertNotIn('update-stack',[c.args[1] for c in self.aws.call.call_args_list])
+
+    def test_untagged_stack_rollout_and_unexpected_tag_detection(self):
+        from copy import deepcopy
+        images = {'app': 'repo/app@sha256:' + 'a' * 64, 'filescanner': 'repo/av@sha256:' + 'b' * 64}
+        task = dict(family=self.m['taskFamily'], status='ACTIVE', networkMode='awsvpc', requiresCompatibilities=['FARGATE'], taskRoleArn=self.m['taskRoleArn'], executionRoleArn=self.m['executionRoleArn'], containerDefinitions=[dict(name=name, image='old', healthCheck={'command':['CMD', 'check']}) for name in images])
+        saved = deepcopy(task)
+        for c in saved['containerDefinitions']: c['image'] = images[c['name']]
+        previous = dict(taskDefinition='old', desiredCount=1)
+        current = dict(taskDefinition='new', desiredCount=1)
+        completed = deepcopy(self.stack)
+        for param in completed['Parameters']:
+            if param['ParameterKey'] in ('AppImageDigest', 'ClamAvImageDigest'):
+                param['ParameterValue'] = images['app' if param['ParameterKey']=='AppImageDigest' else 'filescanner'].split('@')[1]
+        for tags in ([], [{'key':'unexpected', 'value':'added'}]):
+            with self.subTest(tags=tags):
+                aws = Mock()
+                reads = iter([{'taskDefinition':task, 'tags':[]}, {'taskDefinition':saved, 'tags':tags}])
+                aws.call.side_effect = lambda service, op, **kw: next(reads) if op=='describe-task-definition' else {'Stacks':[completed]} if op=='describe-stacks' else {}
+                publisher = Mock()
+                publisher.publish.side_effect = lambda name, *args: images[name]
+                with patch.object(r, 'reviewed_stack', return_value=self.stack), patch.object(r.d, 'read_service', side_effect=[previous,previous,current]), patch.object(r.d, 'stable', return_value=True), patch.object(r.d, 'verify_running', return_value=True):
+                    if tags:
+                        with self.assertRaisesRegex(r.d.DeployError, 'Non-image'):r.release(aws,self.m,self.settings,publisher,'a'*40+'-1')
+                    else:self.assertEqual(r.release(aws,self.m,self.settings,publisher,'a'*40+'-1'),'new')

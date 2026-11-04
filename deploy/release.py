@@ -69,8 +69,8 @@ def release(aws, m, settings, publisher, tag):
                 expected = d.task_request(m, task, tags, images)
                 # Also inspect the actual stored images: task_request substitutes them.
                 d.require(all(c['image'] == images[c['name']] for c in saved['taskDefinition']['containerDefinitions'] if c['name'] in images), 'Stack task images differ')
-                actual['tags'] = sorted(actual['tags'], key=lambda x: x['key'])
-                expected['tags'] = sorted(expected['tags'], key=lambda x: x['key'])
+                actual['tags'] = sorted(actual.get('tags', []), key=lambda x: x['key'])
+                expected['tags'] = sorted(expected.get('tags', []), key=lambda x: x['key'])
                 d.require(actual == expected and updated['desiredCount'] == service['desiredCount'], 'Non-image service configuration changed')
                 if d.verify_running(aws, m, definition, images, updated['desiredCount']): return definition
         time.sleep(10)

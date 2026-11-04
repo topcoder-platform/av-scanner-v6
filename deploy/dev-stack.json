@@ -1,0 +1,4 @@
+{
+  "stackName": "av-scanner-v6-dev",
+  "roleArn": "arn:aws:iam::811668436784:role/av-scanner-v6-dev-cloudformation-deploy"
+}
