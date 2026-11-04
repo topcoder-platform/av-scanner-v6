@@ -15,3 +15,13 @@ RUN case "$CLAMAV_TCP_ADDR" in \
 
 # clamd is intentionally unauthenticated, so the safe default is loopback for
 # ECS awsvpc tasks. Compose explicitly opts into its private bridge address.
+
+# The upstream /init performs root-only ownership/configuration changes. Prepare
+# fixed paths at build time and start both daemons as clamav instead.
+RUN mkdir -p /run/clamav /var/log/clamav \
+    && chown -R clamav:clamav /run/clamav /var/log/clamav /var/lib/clamav
+COPY start.sh /usr/local/bin/start-clamav
+RUN chmod 0555 /usr/local/bin/start-clamav
+USER clamav
+ENTRYPOINT ["/sbin/tini", "-g", "--", "/usr/local/bin/start-clamav"]
+CMD []
