@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 2,
+  "environment": "prod",
+  "accountId": "409275337247",
+  "region": "us-east-1",
+  "deployRoleArn": "arn:aws:iam::409275337247:role/av-scanner-v6-prod-deploy",
+  "taskRoleArn": "arn:aws:iam::409275337247:role/avscan-service-role",
+  "executionRoleArn": "arn:aws:iam::409275337247:role/ecsTaskExecutionRole",
+  "cluster": "av-scanner-service-serverless",
+  "service": "av-scanner-v6",
+  "taskFamily": "av-scanner-v6",
+  "circleciOrgId": "947bef5e-1669-415d-b83c-4fc85155b7df",
+  "circleciProjectId": "d8a251ec-a104-4983-ac96-91c58e171d95",
+  "repository": "github.com/topcoder-platform/av-scanner-v6",
+  "branch": "master",
+  "images": {
+    "app": "file-scanner-processor",
+    "filescanner": "clamav-service-processor"
+  }
+}

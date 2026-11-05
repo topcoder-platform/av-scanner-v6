@@ -1,4 +1,6 @@
+import { createBusApiClient } from "tc-core-library-js";
 import type { AxiosInstance, AxiosRequestConfig } from "axios";
+import { setTimeout as wait } from "node:timers/promises";
 
 import { M2MTokenProvider } from "./auth.js";
 import type { AppConfig } from "./config.js";
@@ -23,6 +25,17 @@ const CONTROL_FIELDS = [
   "callbackKafkaTopic",
 ] as const;
 
+/** Exhausted delivery with its terminal result; never retains an HTTP error/config. */
+export class CallbackDeliveryError extends Error {
+  constructor(
+    readonly result: ScanPayload,
+    readonly attempts: number,
+  ) {
+    super(`Scan callback delivery failed after ${attempts} attempts`);
+    this.name = "CallbackDeliveryError";
+  }
+}
+
 /**
  * Removes scanner routing controls from externally delivered result payloads.
  *
@@ -46,7 +59,7 @@ export function callbackPayload(payload: ScanPayload): ScanResultPayload {
   return output as ScanResultPayload;
 }
 
-/** Handles post-scan file copying and callback delivery. */
+/** Handles post-scan copying between distinct S3 objects and callback delivery. */
 export class ScanResultHandler implements ResultHandler {
   /**
    * Creates the result handler used by ScanProcessor.
@@ -54,17 +67,22 @@ export class ScanResultHandler implements ResultHandler {
    * @param config - Bus API and service identity settings.
    * @param objectStore - S3 copy/delete implementation.
    * @param tokenProvider - Auth0 token source used for Bus API events.
-   * @param http - Axios client used for webhooks and the Bus API.
+   * @param http - Axios client used for webhooks.
+   * @param fetchTransport - Optional isolated transport for the shared Bus client.
    */
   constructor(
     private readonly config: AppConfig,
     private readonly objectStore: ObjectStore,
     private readonly tokenProvider: M2MTokenProvider,
     private readonly http: AxiosInstance,
+    private readonly fetchTransport?: typeof globalThis.fetch,
+    private readonly retryWait: (delayMs: number) => Promise<void> = wait,
   ) {}
 
   /**
-   * Copies any moved result and delivers its callback. Source deletion is
+   * Copies any moved result and delivers its callback. When the source bucket
+   * and key already match the selected destination, skips copying and deletion
+   * while still delivering the callback. Source deletion for an actual move is
    * returned separately for the post-commit step.
    *
    * @param payload - Terminal scan payload.
@@ -77,6 +95,7 @@ export class ScanResultHandler implements ResultHandler {
     source: S3Location,
   ): Promise<ProcessedScan> {
     const result = { ...payload };
+    let deleteSourceAfterCommit = false;
 
     if (result.moveFile) {
       const destinationBucket = result.isInfected
@@ -86,20 +105,40 @@ export class ScanResultHandler implements ResultHandler {
         throw new Error("Scan result is missing its destination bucket");
       }
 
-      await this.objectStore.copy(source, destinationBucket, result.fileName);
+      if (
+        source.bucket !== destinationBucket ||
+        source.key !== result.fileName
+      ) {
+        await this.objectStore.copy(source, destinationBucket, result.fileName);
+        deleteSourceAfterCommit = true;
+      }
       result.url = buildS3Url(destinationBucket, result.fileName);
     }
 
     const externalPayload = callbackPayload(result);
-    if (result.callbackOption === CallbackOptions.Kafka) {
-      await this.postBusEvent(result, externalPayload);
-    } else if (result.callbackOption === CallbackOptions.Webhook) {
-      await this.postWebhook(result, externalPayload);
+    if (result.callbackOption !== CallbackOptions.NoCallback) {
+      for (let attempt = 1; ; attempt += 1) {
+        try {
+          if (result.callbackOption === CallbackOptions.Kafka) {
+            await this.postBusEvent(result, externalPayload);
+          } else {
+            await this.postWebhook(result, externalPayload);
+          }
+          break;
+        } catch {
+          if (attempt >= this.config.webhooks.maxAttempts) {
+            throw new CallbackDeliveryError(result, attempt);
+          }
+          await this.retryWait(
+            this.config.webhooks.retryBaseDelayMs * 2 ** (attempt - 1),
+          );
+        }
+      }
     }
 
     return {
       payload: externalPayload,
-      ...(result.moveFile
+      ...(deleteSourceAfterCommit
         ? {
             afterCommit: async () => {
               await this.objectStore.delete(source);
@@ -126,23 +165,17 @@ export class ScanResultHandler implements ResultHandler {
       throw new Error("Kafka callback is missing callbackKafkaTopic");
     }
 
-    const token = await this.tokenProvider.getToken();
-    await this.http.post(
-      this.config.busApi.eventsUrl,
-      {
-        "mime-type": "application/json",
-        originator: this.config.busApi.originator,
-        payload: externalPayload,
-        timestamp: new Date().toISOString(),
-        topic: result.callbackKafkaTopic,
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-      },
-    );
+    await createBusApiClient({
+      BUSAPI_URL: this.config.busApi.eventsUrl,
+      getToken: () => this.tokenProvider.getToken(),
+      fetch: this.fetchTransport,
+    }).postEvent({
+      "mime-type": "application/json",
+      originator: this.config.busApi.originator,
+      payload: externalPayload,
+      timestamp: new Date().toISOString(),
+      topic: result.callbackKafkaTopic,
+    });
   }
 
   /**

@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import { M2MTokenProvider } from "./auth.js";
 import { ClamAvClient } from "./clamav.js";
 import { loadConfig } from "./config.js";
+import { KafkaDeadLetterPublisher } from "./dead-letter.js";
 import { HealthServer } from "./health-server.js";
 import { KafkaConsumerRunner, KafkaMessageHandler } from "./kafka.js";
 import { createAppLogger } from "./logger.js";
@@ -115,7 +116,13 @@ export async function runApplication(): Promise<void> {
     resultHandler,
     logger,
   );
-  const messageHandler = new KafkaMessageHandler(config, processor, logger);
+  const deadLetters = new KafkaDeadLetterPublisher(config, logger);
+  const messageHandler = new KafkaMessageHandler(
+    config,
+    processor,
+    logger,
+    deadLetters,
+  );
   const consumer = new KafkaConsumerRunner(
     config.kafka,
     messageHandler,
@@ -177,6 +184,7 @@ export async function runApplication(): Promise<void> {
   let applicationFailure: Error | undefined;
   try {
     await health.start();
+    await deadLetters.initialize();
     const consumerRun = consumer.run();
     const drainDeadline = shutdownRequested.then(() =>
       withTimeout(
@@ -197,7 +205,23 @@ export async function runApplication(): Promise<void> {
   process.off("SIGINT", onSigint);
   let cleanupFailure: Error | undefined;
   try {
-    await closeApplicationResources(consumer, health);
+    const results = await Promise.allSettled([
+      closeApplicationResources(consumer, health),
+      withTimeout(
+        deadLetters.close(),
+        RESOURCE_CLOSE_TIMEOUT_MS,
+        "Dead-letter producer close",
+      ),
+    ]);
+    const failures = results.filter(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    if (failures.length) {
+      throw new AggregateError(
+        failures.map((result) => normalizeError(result.reason)),
+        "Application resource shutdown failed",
+      );
+    }
   } catch (error) {
     cleanupFailure = normalizeError(error);
   }

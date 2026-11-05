@@ -5,6 +5,7 @@ import test from "node:test";
 import axios, {
   AxiosHeaders,
   type AxiosAdapter,
+  type AxiosInstance,
   type InternalAxiosRequestConfig,
 } from "axios";
 import { createLogger } from "winston";
@@ -353,7 +354,29 @@ function recordingAdapter(
   };
 }
 
-void test("M2MTokenProvider does not cache an expired JWT without expires_in", async () => {
+/** Adapts the existing isolated Axios test transport to fetch for the shared client.
+ * @param http Recording HTTP fixture. @returns A fetch replacement; transport errors propagate to tc-core.
+ */
+function recordingFetch(http: AxiosInstance): typeof fetch {
+  return async (input, init) => {
+    const response = await http.request({
+      url:
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url,
+      method: init?.method,
+      data: init?.body,
+      headers: init?.headers as Record<string, string>,
+    });
+    return new Response(JSON.stringify(response.data), {
+      status: response.status,
+    });
+  };
+}
+
+void test("M2MTokenProvider does not cache an expired JWT without expires_in", async (context) => {
   const config = testConfig({
     AUTH0_AUDIENCE: "https://bus.example",
     AUTH0_CLIENT_ID: "client-id",
@@ -377,7 +400,9 @@ void test("M2MTokenProvider does not cache an expired JWT without expires_in", a
       statusText: "OK",
     });
   };
-  const tokens = new M2MTokenProvider(config.auth, axios.create({ adapter }));
+  const http = axios.create({ adapter });
+  context.mock.method(globalThis, "fetch", recordingFetch(http));
+  const tokens = new M2MTokenProvider(config.auth, http, globalThis.fetch);
 
   assert.equal(jwtCacheLifetimeSeconds(expiredToken), 0);
   await tokens.getToken();
@@ -386,19 +411,26 @@ void test("M2MTokenProvider does not cache an expired JWT without expires_in", a
   assert.equal(requests.length, 2);
 });
 
-void test("ScanResultHandler stages a clean copy and posts the complete Bus envelope", async () => {
+void test("ScanResultHandler stages a clean copy and posts the complete Bus envelope", async (context) => {
   const config = testConfig({
     AUTH0_AUDIENCE: "https://bus.example",
     AUTH0_CLIENT_ID: "client-id",
     AUTH0_CLIENT_SECRET: "client-secret",
     AUTH0_URL: "https://auth.example/token",
-    BUSAPI_EVENTS_URL: "https://bus.example/events",
+    BUSAPI_EVENTS_URL: "https://bus.example/v6/bus/events",
   });
   const requests: RecordedRequest[] = [];
   const http = axios.create({ adapter: recordingAdapter(requests) });
+  context.mock.method(globalThis, "fetch", recordingFetch(http));
   const { store, copies, deletes } = objectStoreFixture(4);
-  const tokens = new M2MTokenProvider(config.auth, http);
-  const handler = new ScanResultHandler(config, store, tokens, http);
+  const tokens = new M2MTokenProvider(config.auth, http, globalThis.fetch);
+  const handler = new ScanResultHandler(
+    config,
+    store,
+    tokens,
+    http,
+    globalThis.fetch,
+  );
   const payload: ScanPayload = {
     callbackKafkaTopic: "submission.scan.complete",
     callbackOption: CallbackOptions.Kafka,
@@ -430,7 +462,7 @@ void test("ScanResultHandler stages a clean copy and posts the complete Bus enve
   assert.equal("moveFile" in result, false);
   assert.equal("callbackOption" in result, false);
   assert.equal(requests.length, 2);
-  assert.equal(requests[1]?.url, "https://bus.example/events");
+  assert.equal(requests[1]?.url, "https://bus.example/v6/bus/events");
   assert.equal(requests[1]?.headers.Authorization, "Bearer m2m-token");
   const envelope = requests[1]?.data as Record<string, unknown>;
   assert.equal(envelope.topic, "submission.scan.complete");
@@ -443,27 +475,29 @@ void test("ScanResultHandler stages a clean copy and posts the complete Bus enve
   ]);
 });
 
-void test("ScanResultHandler retains the source when callback delivery fails", async () => {
+void test("ScanResultHandler retains the source when callback delivery fails", async (context) => {
   const config = testConfig({
     AUTH0_AUDIENCE: "https://bus.example",
     AUTH0_CLIENT_ID: "client-id",
     AUTH0_CLIENT_SECRET: "client-secret",
     AUTH0_URL: "https://auth.example/token",
-    BUSAPI_EVENTS_URL: "https://bus.example/events",
+    BUSAPI_EVENTS_URL: "https://bus.example/v6/bus/events",
   });
   const requests: RecordedRequest[] = [];
   const http = axios.create({
     adapter: recordingAdapter(
       requests,
-      new Set(["https://bus.example/events"]),
+      new Set(["https://bus.example/v6/bus/events"]),
     ),
   });
+  context.mock.method(globalThis, "fetch", recordingFetch(http));
   const { store, copies, deletes } = objectStoreFixture(4);
   const handler = new ScanResultHandler(
     config,
     store,
-    new M2MTokenProvider(config.auth, http),
+    new M2MTokenProvider(config.auth, http, globalThis.fetch),
     http,
+    globalThis.fetch,
   );
 
   await assert.rejects(
@@ -481,11 +515,162 @@ void test("ScanResultHandler retains the source when callback delivery fails", a
       },
       { bucket: "source-bucket", key: "source.zip", region: "us-east-1" },
     ),
-    /Simulated failure/,
+    /Scan callback delivery failed after 3 attempts/,
   );
 
   assert.equal(copies.length, 1);
   assert.equal(deletes.length, 0);
+});
+
+void test("Scan movement preserves objects already at their destination", async (t) => {
+  const scenarios = [
+    {
+      name: "clean object already in the clean bucket",
+      sourceUrl: "https://s3.amazonaws.com/clean-bucket/submission.zip",
+      sourceBucket: "clean-bucket",
+      sourceKey: "submission.zip",
+      fileName: "submission.zip",
+      destinationBucket: "clean-bucket",
+      expectedUrl: "https://s3.amazonaws.com/clean-bucket/submission.zip",
+      isInfected: false,
+      shouldMove: false,
+    },
+    {
+      name: "encoded virtual-hosted URL identifies the same object",
+      sourceUrl:
+        "https://clean-bucket.s3.us-east-1.amazonaws.com/folder/submission%20%2B%2520.zip",
+      sourceBucket: "clean-bucket",
+      sourceKey: "folder/submission +%20.zip",
+      fileName: "folder/submission +%20.zip",
+      destinationBucket: "clean-bucket",
+      expectedUrl:
+        "https://s3.amazonaws.com/clean-bucket/folder/submission%20%2B%2520.zip",
+      isInfected: false,
+      shouldMove: false,
+    },
+    {
+      name: "infected object already in the quarantine bucket",
+      sourceUrl: "s3://quarantine-bucket/submission.zip",
+      sourceBucket: "quarantine-bucket",
+      sourceKey: "submission.zip",
+      fileName: "submission.zip",
+      destinationBucket: "quarantine-bucket",
+      expectedUrl: "https://s3.amazonaws.com/quarantine-bucket/submission.zip",
+      isInfected: true,
+      shouldMove: false,
+    },
+    {
+      name: "different keys in the same bucket still move",
+      sourceUrl: "s3://clean-bucket/incoming.zip",
+      sourceBucket: "clean-bucket",
+      sourceKey: "incoming.zip",
+      fileName: "submission.zip",
+      destinationBucket: "clean-bucket",
+      expectedUrl: "https://s3.amazonaws.com/clean-bucket/submission.zip",
+      isInfected: false,
+      shouldMove: true,
+    },
+    {
+      name: "infected object in the clean bucket still moves to quarantine",
+      sourceUrl: "s3://clean-bucket/submission.zip",
+      sourceBucket: "clean-bucket",
+      sourceKey: "submission.zip",
+      fileName: "submission.zip",
+      destinationBucket: "quarantine-bucket",
+      expectedUrl: "https://s3.amazonaws.com/quarantine-bucket/submission.zip",
+      isInfected: true,
+      shouldMove: true,
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async (context) => {
+      const config = testConfig({
+        AUTH0_AUDIENCE: "https://bus.example",
+        AUTH0_CLIENT_ID: "client-id",
+        AUTH0_CLIENT_SECRET: "client-secret",
+        AUTH0_URL: "https://auth.example/token",
+        BUSAPI_EVENTS_URL: "https://bus.example/v6/bus/events",
+      });
+      const requests: RecordedRequest[] = [];
+      const http = axios.create({ adapter: recordingAdapter(requests) });
+      context.mock.method(globalThis, "fetch", recordingFetch(http));
+      const { store, copies, deletes, openCount } = objectStoreFixture(4);
+      const results = new ScanResultHandler(
+        config,
+        store,
+        new M2MTokenProvider(config.auth, http, globalThis.fetch),
+        http,
+        globalThis.fetch,
+      );
+      let scanCount = 0;
+      const scanner: AntivirusScanner = {
+        async ping() {},
+        async scan(stream) {
+          scanCount += 1;
+          for await (const chunk of stream) {
+            void chunk;
+          }
+          return scenario.isInfected;
+        },
+      };
+      const processor = new ScanProcessor(
+        config,
+        store,
+        scanner,
+        results,
+        logger,
+      );
+      const handler = new KafkaMessageHandler(config, processor, logger);
+      const { message, commits } = kafkaMessage(
+        JSON.stringify(
+          scanEvent({
+            callbackKafkaTopic: "submission.scan.complete",
+            callbackOption: CallbackOptions.Kafka,
+            cleanDestinationBucket: "clean-bucket",
+            fileName: scenario.fileName,
+            moveFile: true,
+            quarantineDestinationBucket: "quarantine-bucket",
+            url: scenario.sourceUrl,
+          }),
+        ),
+      );
+      const commit = message.commit.bind(message);
+      message.commit = () => {
+        assert.equal(requests.length, 2, "callback must precede commit");
+        assert.equal(deletes.length, 0, "source must survive until commit");
+        return commit();
+      };
+
+      await handler.handle(message);
+
+      assert.equal(openCount.value, 1);
+      assert.equal(scanCount, 1, "existing destination must still be scanned");
+      assert.equal(commits.value, 1);
+      const source = {
+        bucket: scenario.sourceBucket,
+        key: scenario.sourceKey,
+        region: "us-east-1",
+      };
+      assert.deepEqual(
+        copies,
+        scenario.shouldMove
+          ? [[source, scenario.destinationBucket, scenario.fileName]]
+          : [],
+      );
+      assert.deepEqual(deletes, scenario.shouldMove ? [source] : []);
+      assert.equal(requests[1]?.url, "https://bus.example/v6/bus/events");
+      const envelope = requests[1]?.data as Record<string, unknown>;
+      assert.equal(envelope.topic, "submission.scan.complete");
+      assert.deepEqual(envelope.payload, {
+        fileName: scenario.fileName,
+        isInfected: scenario.isInfected,
+        status: "scanned",
+        submissionId: "submission-id",
+        url: scenario.expectedUrl,
+      });
+    });
+  }
 });
 
 void test("ScanResultHandler preserves webhook API-key authentication and payload shape", async () => {
@@ -493,8 +678,14 @@ void test("ScanResultHandler preserves webhook API-key authentication and payloa
   const requests: RecordedRequest[] = [];
   const http = axios.create({ adapter: recordingAdapter(requests) });
   const { store } = objectStoreFixture(4);
-  const tokens = new M2MTokenProvider(config.auth, http);
-  const handler = new ScanResultHandler(config, store, tokens, http);
+  const tokens = new M2MTokenProvider(config.auth, http, globalThis.fetch);
+  const handler = new ScanResultHandler(
+    config,
+    store,
+    tokens,
+    http,
+    globalThis.fetch,
+  );
 
   const processed = await handler.handle(
     {

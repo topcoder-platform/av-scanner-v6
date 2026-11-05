@@ -1,4 +1,4 @@
-FROM clamav/clamav:stable@sha256:f0954d679017eb6d48221e2b2be3ac5457bf278a844f39b672376f55a085f591
+FROM clamav/clamav:stable@sha256:6d87c712e3391e13c1ba6e05dfb074d4b1ddb5a6834b23bb9da990d2a4ef042a
 
 RUN apk upgrade --no-cache
 
@@ -15,3 +15,13 @@ RUN case "$CLAMAV_TCP_ADDR" in \
 
 # clamd is intentionally unauthenticated, so the safe default is loopback for
 # ECS awsvpc tasks. Compose explicitly opts into its private bridge address.
+
+# The upstream /init performs root-only ownership/configuration changes. Prepare
+# fixed paths at build time and start both daemons as clamav instead.
+RUN mkdir -p /run/clamav /var/log/clamav \
+    && chown -R clamav:clamav /run/clamav /var/log/clamav /var/lib/clamav
+COPY start.sh /usr/local/bin/start-clamav
+RUN chmod 0555 /usr/local/bin/start-clamav
+USER clamav
+ENTRYPOINT ["/sbin/tini", "-g", "--", "/usr/local/bin/start-clamav"]
+CMD []

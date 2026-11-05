@@ -1,4 +1,4 @@
-ARG NODE_VERSION=26.5.1
+ARG NODE_VERSION=26.12.1
 ARG PNPM_VERSION=11.15.1
 
 FROM node:${NODE_VERSION}-alpine AS dependencies
@@ -8,6 +8,7 @@ RUN npm install --global pnpm@${PNPM_VERSION}
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY patches ./patches
+COPY tools/minimatch-compat ./tools/minimatch-compat
 RUN pnpm install --frozen-lockfile
 
 FROM dependencies AS build
@@ -15,13 +16,16 @@ FROM dependencies AS build
 COPY eslint.config.mjs tsconfig.json tsconfig.build.json ./
 COPY src ./src
 COPY test ./test
-RUN pnpm lint && pnpm typecheck && pnpm build && pnpm test && pnpm prune --prod
+RUN pnpm run test:dependency-compat && pnpm lint && pnpm typecheck && pnpm build && pnpm test && pnpm prune --prod
 
 FROM alpine:3.24 AS runtime
 
 ARG NODE_VERSION
+# Alpine replaces old APK patch versions. Keep the configured Node major while
+# accepting maintained patch releases and verify the selected runtime below.
 RUN apk upgrade --no-cache \
-    && apk add --no-cache nodejs-current=${NODE_VERSION}-r0 \
+    && apk add --no-cache "nodejs-current~${NODE_VERSION%%.*}" \
+    && test "$(node -p 'process.versions.node.split(".")[0]')" = "${NODE_VERSION%%.*}" \
     && addgroup -S -g 10001 app \
     && adduser -S -D -u 10001 -G app -h /home/app app \
     && mkdir -p /app /home/app \

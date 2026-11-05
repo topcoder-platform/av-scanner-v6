@@ -53,6 +53,11 @@ export interface AppConfig {
     topic: string;
   };
   logLevel: string;
+  deadLetter: {
+    topic: string;
+    replicas: number;
+    retentionMs: number;
+  };
   scan: {
     concurrency: number;
     maxFileSizeBytes: number;
@@ -61,6 +66,8 @@ export interface AppConfig {
   };
   webhooks: {
     timeoutMs: number;
+    maxAttempts: number;
+    retryBaseDelayMs: number;
   };
   whitelists: {
     cleanBuckets: string[];
@@ -314,6 +321,26 @@ export function loadConfig(
 
   const authUrl = environment.AUTH0_URL;
   const tls = kafkaTls(environment, schemeRequestsTls);
+  const topic = environment.AVSCAN_TOPIC ?? "avscan.action.scan";
+  const deadLetterTopic =
+    environment.AVSCAN_DLQ_TOPIC ?? `${topic}.callback-failures`;
+  if (
+    deadLetterTopic === topic ||
+    !/^[a-zA-Z0-9._-]{1,249}$/.test(deadLetterTopic) ||
+    [".", ".."].includes(deadLetterTopic)
+  ) {
+    throw new Error(
+      "AVSCAN_DLQ_TOPIC must be a valid topic distinct from AVSCAN_TOPIC",
+    );
+  }
+  const maxCallbackAttempts = positiveInteger(
+    environment.CALLBACK_MAX_ATTEMPTS,
+    3,
+    "CALLBACK_MAX_ATTEMPTS",
+  );
+  if (maxCallbackAttempts > 5) {
+    throw new Error("CALLBACK_MAX_ATTEMPTS cannot exceed 5");
+  }
 
   return {
     auth: {
@@ -343,7 +370,7 @@ export function loadConfig(
       eventsUrl:
         environment.BUSAPI_EVENTS_URL ??
         environment.BUS_API_URL ??
-        "https://api.topcoder-dev.com/v5/bus/events",
+        "https://api.topcoder-dev.com/v6/bus/events",
       originator: environment.KAFKA_ORIGINATOR ?? "file-scanner-processor",
     },
     clamAv: {
@@ -388,10 +415,23 @@ export function loadConfig(
         30_000,
         "KAFKA_SESSION_TIMEOUT_MS",
       ),
-      topic: environment.AVSCAN_TOPIC ?? "avscan.action.scan",
+      topic,
       ...(tls ? { tls } : {}),
     },
     logLevel: environment.LOG_LEVEL ?? "info",
+    deadLetter: {
+      topic: deadLetterTopic,
+      replicas: positiveInteger(
+        environment.AVSCAN_DLQ_REPLICAS,
+        2,
+        "AVSCAN_DLQ_REPLICAS",
+      ),
+      retentionMs: positiveInteger(
+        environment.AVSCAN_DLQ_RETENTION_MS,
+        604_800_000,
+        "AVSCAN_DLQ_RETENTION_MS",
+      ),
+    },
     scan: {
       concurrency: positiveInteger(
         environment.SCAN_CONCURRENCY,
@@ -415,6 +455,12 @@ export function loadConfig(
       ),
     },
     webhooks: {
+      maxAttempts: maxCallbackAttempts,
+      retryBaseDelayMs: positiveInteger(
+        environment.CALLBACK_RETRY_BASE_DELAY_MS,
+        1_000,
+        "CALLBACK_RETRY_BASE_DELAY_MS",
+      ),
       timeoutMs: positiveInteger(
         environment.WEBHOOK_TIMEOUT_MS,
         15_000,

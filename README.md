@@ -14,7 +14,7 @@ cause ECS task churn.
 
 ## Runtime and processing flow
 
-- Node.js `26.5.1`, pinned by `.nvmrc` and installed from Alpine 3.24 in the
+- Node.js `26.12.1`, pinned by `.nvmrc` and installed from Alpine 3.24 in the
   final application image.
 - ClamAV `1.5.4`, pinned through the official stable sidecar image digest.
 - The final application image contains Alpine's system Node and production
@@ -130,9 +130,13 @@ Supported callback modes are:
 When `moveFile` is true, both destination buckets are required. The source is
 copied to the selected bucket under `fileName`, the callback succeeds, and the
 Kafka offset commits before the original source is deleted. This ordering keeps
-the source available if callback delivery or commit must retry. Whitelists
-restrict values when configured; an empty list retains legacy unrestricted
-behavior.
+the source available if callback delivery or commit must retry. If the source
+bucket and decoded key already match the selected destination bucket and
+`fileName`, copying and source deletion are skipped. Scanning, callback delivery,
+and offset commit still run, and the callback uses the canonical destination URL.
+Different keys within the same bucket still follow the normal move flow.
+Whitelists restrict values when configured; an empty list retains legacy
+unrestricted behavior.
 
 ## Results and failure behavior
 
@@ -181,9 +185,10 @@ Modeled S3 `NotFound`/`NoSuchKey` responses from source `HeadObject` or
 If the source remains absent, the scanner emits `status: "scan-failed"`,
 `isInfected: true`, and `scanError: "s3-object-not-found"` through the
 configured callback. It retains the original URL, skips source movement and
-deletion, and commits the input offset only after callback delivery succeeds.
+deletion, and commits the input offset only after callback delivery succeeds or
+the failed delivery has been acknowledged by the dead-letter topic.
 
-Other S3, ClamAV, destination-copy, callback, and commit errors leave the failed
+Other S3, ClamAV, destination-copy, and commit errors leave the failed
 Kafka offset uncommitted. Per-partition ordering prevents a later record in that
 partition from committing past it. Callback or commit failure leaves the source
 object in place; repeating the destination copy is safe because it targets the
@@ -197,6 +202,44 @@ its offset commits can deliver that callback again on replay. Callback
 consumers should deduplicate using stable business identifiers such as
 `submissionId`; no Kafka consumer can make an arbitrary HTTP side effect and a
 Kafka offset commit atomic.
+
+## Failed callback retention and replay
+
+Webhook and Bus API callbacks make at most three delivery attempts by default,
+with one-second and two-second backoff. Destination copying happens once before
+these attempts. If delivery is exhausted, the scanner publishes the normalized
+original event, terminal scan result, attempt count, timestamp, and input
+`topic:partition:offset` identifier to
+`<AVSCAN_TOPIC>.callback-failures`. Only after Kafka acknowledges that record
+with `acks=all` does the input offset commit. The original source object is kept
+for replay, and the next input record can proceed. If dead-letter publishing or
+input commit fails, the input remains retryable; it is never silently dropped.
+
+At startup the service creates the dead-letter topic if absent, with one
+partition, two replicas, `min.insync.replicas=2`, and seven-day retention. It
+needs Kafka topic describe/create/write access, or operators can provision the
+topic beforehand with these settings. Existing topics are not altered. Set
+`AVSCAN_DLQ_REPLICAS=1` only for a single-broker local environment. Readiness
+cannot pass until topic initialization and the consumer's initial join finish.
+
+For recovery, inspect the retained record, repair the unavailable callback or
+its credentials, then publish its `originalEvent` back to the input topic.
+Review the terminal `result` before replaying. Replay can rescan and copy again;
+for missing-file results it will deliver the same fail-closed verdict if the
+source is still absent. Source lifecycle policies still apply. Do not blindly
+replay the topic on a schedule: an unresolved callback would produce another
+failure record. Deduplicate by `id` and business identifiers because Kafka
+publication, input commit, and HTTP delivery are not one atomic transaction.
+
+Monitor the `Scan callback retained for replay` log event and dead-letter topic
+volume, and handle failures before retention expires. Records retain the input
+callback credentials needed for replay; restrict topic access as for the input
+topic and avoid copying records to logs or tickets. Runtime error logs contain
+only topic/partition/offset, attempt count, and the dead-letter identifier.
+
+An isolated broker round-trip check is available with
+`KAFKA_URL=localhost:9092 pnpm test:dead-letter-integration`. It creates and
+removes a uniquely named test topic and must not target a shared environment.
 
 ## Health and ECS replacement
 
@@ -315,6 +358,11 @@ latch, alarm separately on Kafka consumer errors or lag.
 | `AUTH0_CLIENT_ID` / `AUTH0_CLIENT_SECRET`     | unset                    | Client credentials for kafka callbacks                     |
 | `AUTH0_PROXY_SERVER_URL`                      | unset                    | Optional Topcoder token proxy endpoint                     |
 | `TOKEN_CACHE_TIME`                            | `300`                    | Maximum token cache lifetime in seconds                    |
+| `CALLBACK_MAX_ATTEMPTS`                     | `3`                      | Delivery attempts for webhook and Bus callbacks (maximum 5) |
+| `CALLBACK_RETRY_BASE_DELAY_MS`                | `1000`                   | Exponential callback retry base delay                       |
+| `AVSCAN_DLQ_TOPIC`                           | `<AVSCAN_TOPIC>.callback-failures` | Retained failed callback topic                    |
+| `AVSCAN_DLQ_REPLICAS`                        | `2`                      | Replication factor when creating the topic                  |
+| `AVSCAN_DLQ_RETENTION_MS`                    | `604800000`              | Retention when creating the topic (seven days)              |
 | `WEBHOOK_TIMEOUT_MS`                          | `15000`                  | HTTP callback/Auth0 timeout                                |
 
 `kafka+ssl://` enables TLS and defaults to peer verification with Node's system
@@ -330,3 +378,39 @@ without a client certificate.
 
 AWS credentials use the standard AWS SDK provider chain and are not scanner
 configuration.
+
+## Shared authentication and bus client (v6 refresh)
+
+This branch uses `tc-core-library-js` **4.0.0-rc.1**. Use its named
+`createJwtVerifier` / `createJwtAuthenticator`, `createM2MClient`, and
+`createBusApiClient` exports for shared authentication and bus API publishing.
+Service-specific roles, scopes, sessions and ownership checks remain in this service.
+The former bus wrapper dependency and local JWT cryptography must not be reintroduced.
+
+RSA verification requires an exact configured issuer and audience (`JWT_AUDIENCE`
+for client tokens, `AUTH0_AUDIENCE` for machine/API tokens, or this service's explicit
+issuer-policy settings). HMAC secrets must be at least 32 bytes; no default secret
+is supplied. Expiry is enforced. Machine identity comes from the shared verifier,
+not the presence of scopes. Supply real development credentials through the service's
+existing environment configuration before deployment.
+
+Bus publishers use `createBusApiClient(config).postEvent(event)` with the existing
+event envelope and optional key. Configure `BUSAPI_URL` for v6 and the existing
+OAuth credentials/token provider. The client uses bounded HTTPS requests and does
+not retry POSTs automatically. Application retry/outbox behavior remains local.
+
+See the [core migration guide](https://github.com/topcoder-platform/tc-core-library-js/blob/v4.0.0-rc.1/MIGRATION.md)
+for the API mapping, compatibility requirements, and rollout scope.
+
+## Alpine Node runtime packages
+
+Container stages that install Node through APK constrain `nodejs-current` to the
+major version in `NODE_VERSION`, rather than an exact Alpine package revision.
+Alpine replaces older patch packages in its repositories; the compatible pin
+allows current security patches while a build-time check rejects a different
+Node major. The runtime keeps Alpine's dynamically linked Node and system
+libraries. Existing non-root users and application entrypoints are preserved.
+Build stages using a versioned official Node image retain their configured
+version, and pnpm build arguments are explicitly declared in the consuming stage.
+
+The security dependency update uses Zod 4 while retaining the existing invalid-URL and boolean validation messages. The shared auth/Bus clients keep their native HTTP transport in production; tests explicitly inject their isolated fetch transport. Run `pnpm test:dependency-compat` to check the legacy minimatch adapter in addition to the normal test suite. Rebuild and deploy both the application and ClamAV images to refresh their OS packages.
