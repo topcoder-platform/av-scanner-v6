@@ -1,6 +1,6 @@
 # OIDC deployment migration
 
-This change replaces the Auth0 credential broker and SSM-to-shell deployment path with [tc-deploy-scripts v2.0.8](https://github.com/topcoder-platform/tc-deploy-scripts/releases/tag/v2.0.8), fetched by tag and verified against commit `75bf839e1b4fa4b8dcd5ce36dad0a4d080e9a73d`. Build and deployment run in separate jobs. The deployer cannot read Parameter Store, Secrets Manager or decrypt KMS data, including through another assumed role. ECS continues resolving the existing runtime secret references using the execution role.
+This change replaces the Auth0 credential broker and SSM-to-shell deployment path with [tc-deploy-scripts v2.0.10](https://github.com/topcoder-platform/tc-deploy-scripts/releases/tag/v2.0.10), fetched by tag and verified against commit `e81a6772a33819c1b57c88a95d04494e59c559b8`. Build and deployment run in separate jobs. The deployer cannot read Parameter Store, Secrets Manager or decrypt KMS data, including through another assumed role. ECS continues resolving the existing runtime secret references using the execution role.
 
 ## Production target
 
@@ -38,6 +38,6 @@ IAM templates and detailed AWS baselines are maintained in the private [v6-servi
 
 ## Dev branch refresh
 
-This PR targets `develop` and preserves its current application/dependency fixes. The shared suite is v2.0.8 (100 offline tests); service-specific adapters and their tests remain part of review. Use the current readiness record above for the remaining merge/deployment gates. Updating these files does not provision AWS or CircleCI resources.
+This PR targets `develop` and preserves its current application/dependency fixes. The shared suite is v2.0.10 (100 offline tests); service-specific adapters and their tests remain part of review. Use the current readiness record above for the remaining merge/deployment gates. Updating these files does not provision AWS or CircleCI resources.
 
 Source checkout uses the public HTTPS repository and verifies the exact CircleCI commit, avoiding dependency on failing SSH checkout keys. No GitHub token is added to build or deployment contexts.

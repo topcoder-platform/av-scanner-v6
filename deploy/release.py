@@ -46,8 +46,8 @@ def release(aws, m, settings, publisher, tag):
     response = aws.call('ecs', 'describe-task-definition', taskDefinition=previous, include=['TAGS'])
     task, tags = response['taskDefinition'], response.get('tags', [])
     d.task_request(m, task, tags, {name: 'preflight@sha256:' + '0' * 64 for name in m['images']})
-    deadline = time.monotonic() + 900
-    images = {name: publisher.publish(name, local, tag, deadline) for name, local in [('app', 'av-scanner-v6:candidate'), ('filescanner', 'av-scanner-v6-clamav:candidate')]}
+    # Each image gets its own scan budget after upload and digest verification.
+    images = {name: publisher.publish(name, local, tag) for name, local in [('app', 'av-scanner-v6:candidate'), ('filescanner', 'av-scanner-v6-clamav:candidate')]}
     d.require(d.stable(d.read_service(aws, m), previous), 'Service changed during publication')
     current = reviewed_stack(aws, m, settings)
     d.require(current.get('LastUpdatedTime') == stack.get('LastUpdatedTime') and current['Parameters'] == stack['Parameters'], 'Concurrent stack update detected')
