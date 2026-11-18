@@ -1,6 +1,6 @@
 # OIDC deployment migration
 
-This change replaces the Auth0 credential broker and SSM-to-shell deployment path with [tc-deploy-scripts v2.0.12](https://github.com/topcoder-platform/tc-deploy-scripts/releases/tag/v2.0.12), fetched by tag and verified against commit `f10a134f8274b4268d9fe9131c676c307df01044`. Build and deployment run in separate jobs. The deployer cannot read Parameter Store, Secrets Manager or decrypt KMS data, including through another assumed role. ECS continues resolving the existing runtime secret references using the execution role.
+This change replaces the Auth0 credential broker and SSM-to-shell deployment path with [tc-deploy-scripts v2.0.13](https://github.com/topcoder-platform/tc-deploy-scripts/releases/tag/v2.0.13), fetched by tag and verified against commit `7ec4b52285dc72761224ea4e3261113e7b92ef97`. Build and deployment run in separate jobs. The deployer cannot read Parameter Store, Secrets Manager or decrypt KMS data, including through another assumed role. ECS continues resolving the existing runtime secret references using the execution role.
 
 ## Production target
 
