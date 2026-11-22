@@ -1,0 +1,38 @@
+name: Update pnpm dependency graph
+
+on:
+  push:
+    branches: [develop]
+    paths:
+      - '**/package.json'
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - .github/workflows/dependency-graph.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pnpm-dependency-graph
+  cancel-in-progress: true
+
+jobs:
+  dependency-graph:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          standalone: true
+          run_install: false
+      - name: Export dependencies from the lockfile
+        run: pnpm sbom --sbom-format spdx --lockfile-only --out "$RUNNER_TEMP/pnpm.spdx.json"
+      - name: Submit the resolved dependency graph
+        uses: advanced-security/spdx-dependency-submission-action@b009efcf8b9d562a4569d2028c276522232e631f # v0.4.0
+        with:
+          filePath: ${{ runner.temp }}
+          filePattern: pnpm.spdx.json
+          manifestPath: pnpm-lock.yaml
+          correlator: pnpm-dependency-graph
