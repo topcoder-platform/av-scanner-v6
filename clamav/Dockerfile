@@ -1,6 +1,6 @@
 FROM clamav/clamav:stable@sha256:6d87c712e3391e13c1ba6e05dfb074d4b1ddb5a6834b23bb9da990d2a4ef042a
 
-RUN apk upgrade --no-cache && apk add --no-cache 'zlib>=1.4-r0'
+RUN apk upgrade --no-cache && apk add --no-cache 'libcrypto3>=3.5.9-r1' 'libssl3>=3.5.9-r1' 'libxml2>=2.13.9-r3' 'zlib>=1.4-r0'
 
 COPY clamd.conf /etc/clamav/clamd.conf
 
